@@ -226,9 +226,38 @@ class PDFRenderer:
         else:
             self._cache.clear()
 
+
+# ---------------------------------------------------------------------------
+# CoordinateMapper — pure PDF <-> canvas coordinate math (no Tk dependency)
+# ---------------------------------------------------------------------------
+
+class CoordinateMapper:
+    """Converts between PDF point space and displayed canvas pixel space.
+
+    Kept free of any Tk dependency so it can be unit tested without a live
+    display/canvas.
+    """
+
+    def __init__(self, total_scale: float = 1.0):
+        self.total_scale = total_scale
+
+    def canvas_to_pdf(self, cx: float, cy: float) -> Tuple[float, float]:
+        if self.total_scale == 0:
+            return 0.0, 0.0
+        return cx / self.total_scale, cy / self.total_scale
+
+    def pdf_to_canvas(self, px: float, py: float) -> Tuple[float, float]:
+        return px * self.total_scale, py * self.total_scale
+
     @staticmethod
     def render_scale() -> float:
         return RENDER_DPI / 72.0
+
+    @staticmethod
+    def compute_total_scale(image_width: int, fit_width: int) -> float:
+        """Combine render DPI scale with the display-fit scale."""
+        display_scale = fit_width / image_width
+        return CoordinateMapper.render_scale() * display_scale
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +274,7 @@ class CanvasController:
         self.renderer = renderer
         self.on_change = on_change  # callback when redactions change
 
-        self._total_scale: float = 1.0
+        self._mapper = CoordinateMapper()
         self._drawing: bool = False
         self._draw_start: Optional[Tuple[float, float]] = None
         self._temp_rect_id: Optional[int] = None
@@ -274,12 +303,10 @@ class CanvasController:
         return self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
 
     def canvas_to_pdf(self, cx: float, cy: float) -> Tuple[float, float]:
-        if self._total_scale == 0:
-            return 0.0, 0.0
-        return cx / self._total_scale, cy / self._total_scale
+        return self._mapper.canvas_to_pdf(cx, cy)
 
     def pdf_to_canvas(self, px: float, py: float) -> Tuple[float, float]:
-        return px * self._total_scale, py * self._total_scale
+        return self._mapper.pdf_to_canvas(px, py)
 
     # -- Drawing events -------------------------------------------------------
 
@@ -416,9 +443,9 @@ class CanvasController:
         if fit_width is None:
             fit_width = max(self.canvas.winfo_width() - 20, 400)
 
+        self._mapper.total_scale = CoordinateMapper.compute_total_scale(
+            pil_image.width, fit_width)
         display_scale = fit_width / pil_image.width
-        render_scale = PDFRenderer.render_scale()
-        self._total_scale = render_scale * display_scale
 
         # Scale image for display
         new_w = int(pil_image.width * display_scale)
