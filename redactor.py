@@ -8,10 +8,28 @@ Usage:
     source venv/bin/activate && python redactor.py
 """
 
+import sys
+import os
+
+# When bundled as a standalone .app (py2app), Tcl/Tk needs to be pointed at
+# its script library (init.tcl, tk.tcl, ...) bundled inside the app itself,
+# rather than the hardcoded build-machine path compiled into the Tcl/Tk
+# dylibs (e.g. a Homebrew Cellar path that won't exist on an end user's
+# Mac). This must happen before `import tkinter` triggers Tcl's init. A
+# normal `python redactor.py` run from a dev venv is unaffected — RESOURCEPATH
+# is only set by py2app's bootstrap.
+if getattr(sys, "frozen", False) and "RESOURCEPATH" in os.environ:
+    _resources = os.environ["RESOURCEPATH"]
+    _tcl_lib = os.path.join(_resources, "tcl", "tcl8.6")
+    _tk_lib = os.path.join(_resources, "tcl", "tk8.6")
+    if os.path.isdir(_tcl_lib):
+        os.environ["TCL_LIBRARY"] = _tcl_lib
+    if os.path.isdir(_tk_lib):
+        os.environ["TK_LIBRARY"] = _tk_lib
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import uuid
-import os
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
