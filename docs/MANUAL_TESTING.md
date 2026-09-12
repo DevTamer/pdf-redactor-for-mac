@@ -40,6 +40,12 @@ sample PDF.
       the matching sidebar row disappears.
 - [ ] Clicking a row in the sidebar list jumps to that page (if needed) and
       highlights the rectangle in blue on the canvas.
+- [ ] On a page with closely-spaced single-line text, draw a rectangle
+      loosely over one line (don't try to be pixel-precise, drag the way
+      you naturally would) and Apply. Confirm the lines directly above and
+      below survive — only your target line should be gone. Deliberately
+      dragging a rectangle across several lines on purpose should still
+      redact all of them.
 
 ## Search-based redaction
 

@@ -50,6 +50,14 @@ MIN_RECT_SIZE = 5  # Minimum pixel size to count as intentional draw
 CACHE_LIMIT = 5
 HISTORY_LIMIT = 20  # Max snapshots kept in the undo/redo history
 
+# A redaction rectangle must cover at least this fraction of a text line's
+# height for that line to be treated as intentionally marked. PyMuPDF
+# removes an entire text line if a redaction rectangle touches its bounding
+# box at all — with tightly-spaced lines, a hand-drawn rectangle that's a
+# few points too tall can graze a neighboring line and wipe it completely.
+# See RedactionModel._snap_to_text_lines.
+LINE_OVERLAP_THRESHOLD = 0.5
+
 # Visual style for redaction overlays
 REDACT_FILL = "red"
 REDACT_STIPPLE = "gray25"
@@ -228,8 +236,10 @@ class RedactionModel:
         count = 0
         for page_num, rects in self.pending.items():
             page = self.doc[page_num]
+            line_bboxes = self._page_line_bboxes(page)
             for r in rects:
                 fitz_rect = fitz.Rect(r.pdf_rect)
+                fitz_rect = self._snap_to_text_lines(fitz_rect, line_bboxes)
                 page.add_redact_annot(fitz_rect, fill=APPLIED_FILL_RGB)
                 count += 1
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
@@ -239,6 +249,46 @@ class RedactionModel:
             label = f"Applied {count} redaction{'s' if count != 1 else ''}"
             self._snapshot(label)
         return count
+
+    @staticmethod
+    def _page_line_bboxes(page: fitz.Page) -> List[Tuple[float, float, float, float]]:
+        """Every text line's bounding box on a page, as (x0, y0, x1, y1)."""
+        boxes = []
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                boxes.append(tuple(line["bbox"]))
+        return boxes
+
+    @staticmethod
+    def _snap_to_text_lines(
+        rect: fitz.Rect,
+        line_bboxes: List[Tuple[float, float, float, float]],
+    ) -> fitz.Rect:
+        """Tighten a redaction rectangle's vertical extent to the text
+        line(s) it substantially (LINE_OVERLAP_THRESHOLD+) covers.
+
+        PyMuPDF removes a whole text line if a redaction rectangle merely
+        touches its bounding box — so a rectangle that only grazes a
+        neighboring line (e.g. a hand-drawn selection a few points too
+        tall on closely-spaced lines) would otherwise take that whole
+        neighboring line down with it. Horizontal extent is left exactly
+        as drawn, so redacting part of a word (e.g. masking only the last
+        few digits of an ID) still works. If the rectangle doesn't
+        substantially cover any line (it's over an image, whitespace, or
+        other non-text content), it's returned unchanged.
+        """
+        covered_y0 = covered_y1 = None
+        for lx0, ly0, lx1, ly1 in line_bboxes:
+            line_height = ly1 - ly0
+            if line_height <= 0:
+                continue
+            overlap = min(rect.y1, ly1) - max(rect.y0, ly0)
+            if overlap / line_height >= LINE_OVERLAP_THRESHOLD:
+                covered_y0 = ly0 if covered_y0 is None else min(covered_y0, ly0)
+                covered_y1 = ly1 if covered_y1 is None else max(covered_y1, ly1)
+        if covered_y0 is None:
+            return rect
+        return fitz.Rect(rect.x0, covered_y0, rect.x1, covered_y1)
 
     def save_document(self, path: str) -> None:
         """Save with scrub + garbage collection for true data removal.

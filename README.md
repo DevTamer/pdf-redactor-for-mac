@@ -22,7 +22,11 @@ be recovered by copy-pasting, exporting, or looking at the raw file.
 
 ## How redaction works here
 
-- **Draw a rectangle** on the page to mark that area for redaction.
+- **Draw a rectangle** on the page to mark that area for redaction. You
+  don't need to be pixel-precise — the app tightens your rectangle to the
+  actual text line(s) it substantially covers before removing anything, so
+  a bit of stray margin above or below a line you're dragging over won't
+  take a neighboring line down with it.
 - **Search Text** finds every occurrence of a term on every page and marks
   each match automatically.
 - Marked areas show as pending (semi-transparent red) until you press
