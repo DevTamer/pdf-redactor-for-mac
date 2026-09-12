@@ -206,7 +206,10 @@ def test_apply_redactions_with_nothing_pending_is_a_noop(sample_pdf_path):
     try:
         count = model.apply_redactions()
         assert count == 0
-        assert model.is_applied
+        # A true no-op shouldn't fabricate a history entry or flip
+        # is_applied — nothing actually changed.
+        assert not model.is_applied
+        assert not model.can_undo()
     finally:
         model.close_document()
 

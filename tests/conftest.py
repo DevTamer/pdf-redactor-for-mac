@@ -14,7 +14,7 @@ import pytest
 # Make redactor.py importable as `redactor` without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-PAGE_WIDTH = 400
+PAGE_WIDTH = 500
 PAGE_HEIGHT = 600
 
 # Known text placed on each page, at known positions, so tests can search for

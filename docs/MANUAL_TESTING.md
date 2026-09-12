@@ -65,13 +65,38 @@ sample PDF.
 
 - [ ] **APPLY REDACTIONS** with nothing pending shows an informational
       dialog and does nothing.
-- [ ] With redactions pending, it shows a confirmation dialog stating the
-      count/pages and that it's irreversible; **Cancel** applies nothing.
+- [ ] With redactions pending, it shows a confirmation dialog with the
+      count/pages and a mention that it's undoable while the document
+      stays open; **Cancel** applies nothing.
 - [ ] Confirming applies: overlays are replaced by black boxes rendered
       into the page, pending list empties, status bar reflects "Applied N
-      redaction(s)."
+      redaction(s)," and a new entry appears in the **History** panel.
 - [ ] Zoom in / rescroll — the redacted area is genuinely black, no
       underlying text/image bleeds through at the edges.
+
+## Undo / History
+
+- [ ] Freshly opening a document shows exactly one **History** entry,
+      "Original," and Undo/Redo are disabled.
+- [ ] After applying, **Edit → Undo Apply** (`Cmd+Z`) restores the
+      redacted content and moves the current-state marker back in the
+      History list; Redo becomes enabled.
+- [ ] **Edit → Redo Apply** (`Cmd+Shift+Z`) reapplies it; content is
+      redacted again.
+- [ ] Clicking an entry directly in the **History** list jumps straight to
+      that state (try jumping back two applies, not just one).
+- [ ] Undo past a point, then apply something new: the discarded "redo"
+      entries disappear from the list (the new apply replaces them), not
+      just get appended after.
+- [ ] Undo/redo do not touch the current *pending* (not-yet-applied)
+      redactions list — only applied history.
+- [ ] Undo/Redo/History are disabled/empty again immediately after
+      **Close Document**, and a freshly opened document doesn't carry over
+      history from whatever was open before.
+- [ ] **Save Redacted As…** after an Undo saves the *current* (reverted)
+      state — open the saved file and confirm the content you undid back
+      to is present, and that nothing about the discarded redo branch
+      leaked into the file.
 
 ## Save
 

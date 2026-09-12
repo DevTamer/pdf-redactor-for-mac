@@ -48,6 +48,7 @@ MIN_WINDOW_HEIGHT = 600
 SIDEBAR_WIDTH = 280
 MIN_RECT_SIZE = 5  # Minimum pixel size to count as intentional draw
 CACHE_LIMIT = 5
+HISTORY_LIMIT = 20  # Max snapshots kept in the undo/redo history
 
 # Visual style for redaction overlays
 REDACT_FILL = "red"
@@ -96,6 +97,21 @@ class RedactionRect:
         return f"({x0:.0f},{y0:.0f})-({x1:.0f},{y1:.0f})"
 
 
+@dataclass
+class HistoryEntry:
+    """One snapshot of the document, for session-scoped undo/redo.
+
+    Deliberately in-memory only (never written to disk as its own file):
+    a redaction's whole point is that removed content shouldn't be
+    recoverable, so history that could resurrect it must not outlive the
+    running app. Saving always writes the *current* state only — see
+    RedactionModel.save_document.
+    """
+
+    label: str
+    doc_bytes: bytes
+
+
 # ---------------------------------------------------------------------------
 # RedactionModel — document state + pending redactions
 # ---------------------------------------------------------------------------
@@ -108,7 +124,8 @@ class RedactionModel:
         self.file_path: Optional[str] = None
         self.current_page: int = 0
         self.pending: Dict[int, List[RedactionRect]] = {}  # page_num -> [rects]
-        self.is_applied: bool = False
+        self._history: List[HistoryEntry] = []
+        self._history_index: int = -1
 
     # -- Document lifecycle ---------------------------------------------------
 
@@ -118,7 +135,8 @@ class RedactionModel:
         self.file_path = path
         self.current_page = 0
         self.pending = {}
-        self.is_applied = False
+        self._history = [HistoryEntry(label="Original", doc_bytes=self.doc.tobytes())]
+        self._history_index = 0
 
     def close_document(self) -> None:
         if self.doc:
@@ -127,7 +145,14 @@ class RedactionModel:
         self.file_path = None
         self.current_page = 0
         self.pending = {}
-        self.is_applied = False
+        self._history = []
+        self._history_index = -1
+
+    @property
+    def is_applied(self) -> bool:
+        """Whether the *currently loaded* state includes any applied
+        redactions (i.e. we're past the "Original" history entry)."""
+        return self._history_index > 0
 
     @property
     def page_count(self) -> int:
@@ -193,7 +218,13 @@ class RedactionModel:
     # -- Apply & Save ---------------------------------------------------------
 
     def apply_redactions(self) -> int:
-        """Apply all pending redactions. Returns count applied. IRREVERSIBLE."""
+        """Apply all pending redactions. Returns count applied.
+
+        Permanent in the sense that the source content is actually gone
+        from the document — but undoable for the rest of this session via
+        undo()/redo()/jump_to_history() (see class docstring on
+        HistoryEntry for why that's a memory-only, per-session thing).
+        """
         count = 0
         for page_num, rects in self.pending.items():
             page = self.doc[page_num]
@@ -204,13 +235,79 @@ class RedactionModel:
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
                                   graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED)
         self.pending.clear()
-        self.is_applied = True
+        if count:
+            label = f"Applied {count} redaction{'s' if count != 1 else ''}"
+            self._snapshot(label)
         return count
 
     def save_document(self, path: str) -> None:
-        """Save with scrub + garbage collection for true data removal."""
+        """Save with scrub + garbage collection for true data removal.
+
+        Always writes the *current* document state only. Undo/redo history
+        (and whatever it contains) never reaches this — or any — file.
+        """
         self.doc.scrub()
         self.doc.save(path, garbage=3, deflate=True)
+
+    # -- Undo / redo history ---------------------------------------------------
+    #
+    # A lightweight, in-memory "history palette" (Photoshop-style): each
+    # applied-redaction action becomes one entry holding a full snapshot of
+    # the document at that point. Undo/redo/jump_to_history swap the live
+    # document for an earlier or later snapshot. This is scoped to the
+    # current app session on purpose — see HistoryEntry's docstring.
+
+    def _snapshot(self, label: str) -> None:
+        """Record the current document state as a new history entry,
+        discarding any redo branch beyond the current point."""
+        del self._history[self._history_index + 1:]
+        self._history.append(HistoryEntry(label=label, doc_bytes=self.doc.tobytes()))
+        if len(self._history) > HISTORY_LIMIT:
+            del self._history[:len(self._history) - HISTORY_LIMIT]
+        self._history_index = len(self._history) - 1
+
+    def _load_history_entry(self, index: int) -> str:
+        entry = self._history[index]
+        old_page = self.current_page
+        self.doc.close()
+        self.doc = fitz.open(stream=entry.doc_bytes, filetype="pdf")
+        self.current_page = min(old_page, self.page_count - 1) if self.page_count else 0
+        self._history_index = index
+        return entry.label
+
+    @property
+    def history_index(self) -> int:
+        return self._history_index
+
+    def history_entries(self) -> List[str]:
+        """Labels of every history entry, oldest first."""
+        return [e.label for e in self._history]
+
+    def can_undo(self) -> bool:
+        return self._history_index > 0
+
+    def can_redo(self) -> bool:
+        return self._history_index < len(self._history) - 1
+
+    def undo(self) -> str:
+        """Revert to the state before the most recent apply. Returns the
+        label of the state now current."""
+        if not self.can_undo():
+            raise ValueError("Nothing to undo")
+        return self._load_history_entry(self._history_index - 1)
+
+    def redo(self) -> str:
+        """Re-apply the most recently undone state. Returns its label."""
+        if not self.can_redo():
+            raise ValueError("Nothing to redo")
+        return self._load_history_entry(self._history_index + 1)
+
+    def jump_to_history(self, index: int) -> str:
+        """Jump directly to an arbitrary history entry (as clicking an
+        entry in a Photoshop-style history panel would)."""
+        if not (0 <= index < len(self._history)):
+            raise IndexError(f"History index {index} out of range")
+        return self._load_history_entry(index)
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +621,9 @@ class RedactorApp:
         self.root.bind("<Command-o>", lambda e: self._on_open())
         self.root.bind("<Command-s>", lambda e: self._on_save())
         self.root.bind("<Command-w>", lambda e: self._on_close_doc())
+        self.root.bind("<Command-z>", lambda e: self._on_undo())
+        self.root.bind("<Command-Shift-z>", lambda e: self._on_redo())
+        self.root.bind("<Command-Shift-Z>", lambda e: self._on_redo())
 
         self._update_ui_state()
 
@@ -545,12 +645,17 @@ class RedactorApp:
                               accelerator="Cmd+W")
 
         # Edit menu
-        edit_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Edit", menu=edit_menu)
-        edit_menu.add_command(label="Clear Page Redactions",
-                              command=self._on_clear_page)
-        edit_menu.add_command(label="Clear All Redactions",
-                              command=self._on_clear_all)
+        self.edit_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Edit", menu=self.edit_menu)
+        self.edit_menu.add_command(label="Undo Apply", command=self._on_undo,
+                                   accelerator="Cmd+Z")
+        self.edit_menu.add_command(label="Redo Apply", command=self._on_redo,
+                                   accelerator="Cmd+Shift+Z")
+        self.edit_menu.add_separator()
+        self.edit_menu.add_command(label="Clear Page Redactions",
+                                   command=self._on_clear_page)
+        self.edit_menu.add_command(label="Clear All Redactions",
+                                   command=self._on_clear_all)
 
     # -- Toolbar --------------------------------------------------------------
 
@@ -640,6 +745,40 @@ class RedactorApp:
         self.search_status = ttk.Label(search_frame, text="", foreground="gray")
         self.search_status.pack(fill="x", pady=(4, 0))
 
+        # -- History (undo/redo across applied redactions) --
+        history_frame = ttk.LabelFrame(sidebar, text="History", padding=8)
+        history_frame.pack(fill="x", padx=5, pady=3)
+
+        history_list_row = ttk.Frame(history_frame)
+        history_list_row.pack(fill="x")
+
+        # A plain tk.Listbox rather than ttk.Treeview: this is a simple
+        # ordered, click-to-jump list (like Photoshop's history palette),
+        # not tabular data.
+        self.history_list = tk.Listbox(history_list_row, height=4,
+                                       exportselection=False, activestyle="none")
+        history_scroll = ttk.Scrollbar(history_list_row, orient="vertical",
+                                       command=self.history_list.yview)
+        self.history_list.configure(yscrollcommand=history_scroll.set)
+        self.history_list.pack(side="left", fill="both", expand=True)
+        history_scroll.pack(side="right", fill="y")
+        self.history_list.bind("<<ListboxSelect>>", self._on_history_select)
+
+        history_btn_row = ttk.Frame(history_frame)
+        history_btn_row.pack(fill="x", pady=(5, 0))
+        self.undo_btn = ttk.Button(history_btn_row, text="Undo",
+                                   command=self._on_undo, width=8)
+        self.undo_btn.pack(side="left", padx=(0, 5))
+        self.redo_btn = ttk.Button(history_btn_row, text="Redo",
+                                   command=self._on_redo, width=8)
+        self.redo_btn.pack(side="left")
+
+        ttk.Label(history_frame,
+                  text="Undo/redo lasts for this session only. What you "
+                       "Save always reflects just the current state.",
+                  foreground="gray", font=("TkDefaultFont", 10),
+                  wraplength=240, justify="left").pack(fill="x", pady=(4, 0))
+
         # -- Pending redactions list --
         redact_frame = ttk.LabelFrame(sidebar, text="Pending Redactions",
                                        padding=8)
@@ -691,7 +830,9 @@ class RedactorApp:
         self.apply_btn.pack(fill="x", pady=2)
 
         ttk.Label(action_frame,
-                  text="Warning: applying is irreversible.\nContent will be permanently removed.",
+                  text="Content will be permanently removed. Undo (Cmd+Z) "
+                       "works until you Save — the saved file never "
+                       "contains removed content.",
                   foreground="gray", font=("TkDefaultFont", 10),
                   wraplength=240, justify="center").pack(pady=(2, 0))
 
@@ -712,6 +853,8 @@ class RedactorApp:
 
         state_doc = "normal" if has_doc else "disabled"
         state_pending = "normal" if (has_doc and has_pending) else "disabled"
+        state_undo = "normal" if (has_doc and self.model.can_undo()) else "disabled"
+        state_redo = "normal" if (has_doc and self.model.can_redo()) else "disabled"
 
         self.save_btn.config(state=state_doc)
         self.prev_btn.config(state=state_doc)
@@ -721,6 +864,10 @@ class RedactorApp:
         self.remove_btn.config(state=state_pending)
         self.clear_page_btn.config(state=state_pending)
         self.clear_all_btn.config(state=state_pending)
+        self.undo_btn.config(state=state_undo)
+        self.redo_btn.config(state=state_redo)
+        self.edit_menu.entryconfig("Undo Apply", state=state_undo)
+        self.edit_menu.entryconfig("Redo Apply", state=state_redo)
 
         if has_doc:
             p = self.model.current_page
@@ -769,6 +916,7 @@ class RedactorApp:
             self.model.open_document(path)
             self.renderer.invalidate()
             self._update_redaction_list()
+            self._update_history_list()
             self._refresh_page()
             self.root.title(f"PDF Redactor — {os.path.basename(path)}")
         except Exception as e:
@@ -825,6 +973,7 @@ class RedactorApp:
         self.canvas.delete("all")
         self.controller.clear_overlays()
         self._update_redaction_list()
+        self._update_history_list()
         self.root.title("PDF Redactor")
         self._update_ui_state()
 
@@ -970,7 +1119,9 @@ class RedactorApp:
             f"Apply {count} redaction{'s' if count != 1 else ''} "
             f"across {pages} page{'s' if pages != 1 else ''}?\n\n"
             "This will PERMANENTLY remove the content under\n"
-            "the marked areas. This cannot be undone.\n\n"
+            "the marked areas. You can undo it (Cmd+Z) while this\n"
+            "document stays open, but once you Save, the output\n"
+            "file will contain no trace of it.\n\n"
             "The original file will not be modified until you Save.",
         )
         if not answer:
@@ -985,6 +1136,7 @@ class RedactorApp:
             self.renderer.invalidate()  # force re-render all pages
             self._refresh_page()
             self._update_redaction_list()
+            self._update_history_list()
             self.search_status.config(text="")
             self.status_label.config(
                 text=f"Applied {count} redaction{'s' if count != 1 else ''}. "
@@ -992,6 +1144,52 @@ class RedactorApp:
             )
         except Exception as e:
             messagebox.showerror("Error", f"Failed to apply redactions:\n{e}")
+
+    # -- Undo / redo history ---------------------------------------------------
+
+    def _on_undo(self) -> None:
+        if not self.model.doc or not self.model.can_undo():
+            return
+        label = self.model.undo()
+        self.renderer.invalidate()
+        self._refresh_page()
+        self._update_history_list()
+        self.status_label.config(text=f"Undo — now at: {label}")
+
+    def _on_redo(self) -> None:
+        if not self.model.doc or not self.model.can_redo():
+            return
+        label = self.model.redo()
+        self.renderer.invalidate()
+        self._refresh_page()
+        self._update_history_list()
+        self.status_label.config(text=f"Redo — now at: {label}")
+
+    def _on_history_select(self, event=None) -> None:
+        """Jump directly to whatever history entry was clicked."""
+        selection = self.history_list.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        if index == self.model.history_index:
+            return
+        label = self.model.jump_to_history(index)
+        self.renderer.invalidate()
+        self._refresh_page()
+        self._update_history_list()
+        self.status_label.config(text=f"Jumped to: {label}")
+
+    def _update_history_list(self) -> None:
+        """Rebuild the History list and mark the current state."""
+        self.history_list.delete(0, "end")
+        for i, label in enumerate(self.model.history_entries()):
+            marker = "▸ " if i == self.model.history_index else "   "
+            self.history_list.insert("end", f"{marker}{label}")
+        self.history_list.selection_clear(0, "end")
+        if 0 <= self.model.history_index < self.history_list.size():
+            self.history_list.selection_set(self.model.history_index)
+            self.history_list.see(self.model.history_index)
+        self._update_ui_state()
 
     # -- Run ------------------------------------------------------------------
 

@@ -4,10 +4,9 @@ A small macOS app for **true PDF redaction** — permanently removing sensitive
 text and image content from a PDF, not just drawing a black box over it.
 
 Draw rectangles over content to remove, or search for text and redact every
-match, then apply. The underlying text/graphics/image pixels are stripped
-from the document (via [PyMuPDF](https://pymupdf.readthedocs.io/)'s redaction
-+ scrub pipeline) before you save — so the "hidden" content can't be
-recovered by copy-pasting, exporting, or looking at the raw file.
+match, then apply. The underlying text, graphics, and image pixels are
+stripped from the document before you save — so the "hidden" content can't
+be recovered by copy-pasting, exporting, or looking at the raw file.
 
 ## Quick Start (no programming required)
 
@@ -27,14 +26,29 @@ recovered by copy-pasting, exporting, or looking at the raw file.
 - **Search Text** finds every occurrence of a term on every page and marks
   each match automatically.
 - Marked areas show as pending (semi-transparent red) until you press
-  **APPLY REDACTIONS** — at that point PyMuPDF permanently removes the text,
-  vector graphics, and image pixels under each marked rectangle and draws a
-  black box in their place. **This step is irreversible** in the open
-  document (nothing is written to disk yet).
-- **Save Redacted As…** writes the result to a new file. Saving also runs
-  `scrub()` (strips metadata, embedded files, JavaScript, etc.) and garbage
-  collection so leftover unreferenced objects don't carry redacted content
-  along with them. Your original file is never modified.
+  **APPLY REDACTIONS** — at that point the text, vector graphics, and image
+  pixels under each marked rectangle are permanently removed from the
+  document and a black box is drawn in their place.
+- **Save Redacted As…** writes the result to a new file. Saving also strips
+  metadata, embedded files, and JavaScript, and garbage-collects the file
+  so leftover unreferenced objects don't carry redacted content along with
+  them. Your original file is never modified.
+
+### Undo / History
+
+Applying redactions isn't a dead end while you're still working: **Edit →
+Undo Apply** (`Cmd+Z`) / **Redo Apply** (`Cmd+Shift+Z`), or clicking an
+entry in the **History** panel, can take you back to (or forward from) any
+earlier state — much like Photoshop's history palette.
+
+This history is intentionally session-only: it lives in memory for as long
+as the document stays open in the app, and closing the document or quitting
+discards it. Nothing about it is ever written to disk. **Whatever you Save
+always reflects only the current state** — a saved file never contains
+history, so redacted content it no longer shows is genuinely gone from
+that file, not just hidden behind an available "undo." If you want to walk
+a redaction back after you've already saved, reopen the *original* source
+file (which the app never modifies) and start again from there.
 
 ## Developer setup
 
@@ -75,7 +89,9 @@ See [`packaging/`](packaging/) for the `py2app` build used to produce the
 Everything lives in `redactor.py`, split into focused pieces:
 
 - `RedactionModel` — owns the open `fitz.Document`, tracks pending
-  redactions per page, runs search/apply/save. No UI code.
+  redactions per page, runs search/apply/save, and keeps the in-memory
+  undo/redo history (a stack of full document snapshots, one per apply).
+  No UI code.
 - `PDFRenderer` — renders pages to `PIL.Image`s with a small LRU cache.
 - `CoordinateMapper` — pure PDF-point ↔ canvas-pixel math, with no Tk
   dependency (this is what makes it unit-testable in the first place).
