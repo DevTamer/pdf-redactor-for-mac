@@ -8,6 +8,10 @@ match, then apply. The underlying text, graphics, and image pixels are
 stripped from the document before you save — so the "hidden" content can't
 be recovered by copy-pasting, exporting, or looking at the raw file.
 
+## Demo
+
+https://github.com/user-attachments/assets/3b1a2d27-6fc4-45a1-821d-c9b5958e56a3
+
 ## Quick Start (no programming required)
 
 1. Go to the [Releases page](https://github.com/DevTamer/pdf-redactor-for-mac/releases)
