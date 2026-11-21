@@ -15,7 +15,8 @@ that those dylibs need at startup — Homebrew's tcl-tk isn't a macOS
 a hardcoded build-machine path (the Homebrew Cellar) baked into the dylib.
 That works on the machine that built it and nowhere else. So this script
 also copies Tcl/Tk's `lib/tcl8.6` and `lib/tk8.6` directories into the app
-bundle, and redactor.py points TCL_LIBRARY/TK_LIBRARY at them when frozen.
+bundle, and redactor.py points TCL_LIBRARY/TK_LIBRARY at them when frozen
+(via pdfcore.frozen.configure_bundled_tcl_tk).
 """
 
 import os
@@ -66,7 +67,7 @@ DATA_FILES += bundle_dir_as_data_files(
 OPTIONS = {
     "argv_emulation": False,
     "iconfile": "icon.icns",
-    "packages": ["fitz", "PIL"],
+    "packages": ["fitz", "PIL", "pdfcore"],
     "plist": {
         "CFBundleName": "PDF Redactor",
         "CFBundleDisplayName": "PDF Redactor",

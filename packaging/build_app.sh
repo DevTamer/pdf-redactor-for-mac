@@ -1,6 +1,9 @@
 #!/bin/bash
 # Builds PDF Redactor.app and a distributable PDF Redactor.dmg.
 #
+# Runs the test suite against the exact pinned dependencies first (including
+# the pinned pdfcore release) and refuses to build if anything fails.
+#
 # Requires the same Homebrew Python that setup.sh uses (python-tk@3.11),
 # plus its tcl-tk@8 dependency — setup_app.py bundles that Tcl/Tk's script
 # library into the app so the built .app works on Macs that don't have
@@ -22,10 +25,16 @@ if [ ! -x "$PY_BIN" ]; then
     exit 1
 fi
 
-echo "Setting up an isolated build environment ($BUILD_VENV)..."
-"$PY_BIN" -m venv "$BUILD_VENV"
+echo "Setting up a fresh, isolated build environment ($BUILD_VENV)..."
+# --clear: always start from scratch, so the app is built from exactly the
+# versions pinned in requirements.txt (in particular the pdfcore tag), never
+# from something left over in the venv, like an editable dev install.
+"$PY_BIN" -m venv --clear "$BUILD_VENV"
 "$BUILD_VENV/bin/pip" install --upgrade pip -q
-"$BUILD_VENV/bin/pip" install -q -r requirements.txt py2app
+"$BUILD_VENV/bin/pip" install -q -r requirements.txt -r requirements-dev.txt py2app
+
+echo "Running the test suite against the pinned dependencies..."
+"$BUILD_VENV/bin/python" -m pytest -q
 
 echo "Building $APP_NAME.app..."
 cd packaging

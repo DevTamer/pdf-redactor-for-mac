@@ -241,3 +241,92 @@ def test_save_document_persists_redactions(sample_pdf_path, tmp_path):
         assert "John Doe" in all_text
     finally:
         reopened.close()
+
+
+# -- Guarantees that depend on pdfcore's session/history ----------------------
+#
+# The open document and the undo/redo history now come from pdfcore's
+# DocumentSession. These pin down the redactor-level guarantees that rely
+# on it, so a pdfcore upgrade that broke them would fail here.
+
+def _all_decompressed_streams(path) -> bytes:
+    """Every stream in the file, decompressed, concatenated. Catches text
+    that's still present in the file but not reachable via get_text()."""
+    doc = fitz.open(str(path))
+    try:
+        chunks = []
+        for xref in range(1, doc.xref_length()):
+            if doc.xref_is_stream(xref):
+                chunks.append(doc.xref_stream(xref) or b"")
+            chunks.append((doc.xref_object(xref) or "").encode("latin-1", "replace"))
+        return b"".join(chunks)
+    finally:
+        doc.close()
+
+
+def _redact_everywhere(model, term):
+    for page_num, quads in model.search_text(term).items():
+        for q in quads:
+            r = q.rect
+            model.add_redaction(RedactionRect.create(
+                page_num, (r.x0, r.y0, r.x1, r.y1), "search", search_term=term))
+    return model.apply_redactions()
+
+
+def _file_contains(path, term: str) -> bool:
+    """Whether ``term`` appears anywhere in the file's raw (decompressed)
+    content, as literal bytes or as a PDF hex string (which is how
+    PyMuPDF's insert_text encodes it)."""
+    raw = _all_decompressed_streams(path).lower()
+    return (term.encode().lower() in raw
+            or term.encode().hex().encode() in raw)
+
+
+def test_saved_file_has_no_trace_of_pre_apply_history(sample_pdf_path, tmp_path):
+    # Sanity check the probe: the term is findable in the raw original.
+    assert _file_contains(sample_pdf_path, "Falcon")
+
+    model = RedactionModel()
+    model.open_document(str(sample_pdf_path))
+    try:
+        assert _redact_everywhere(model, "Falcon") >= 1
+        # Undo history still holds the "Original" snapshot in memory...
+        assert model.can_undo()
+
+        out_path = tmp_path / "redacted.pdf"
+        model.save_document(str(out_path))
+    finally:
+        model.close_document()
+
+    # ...but none of it reaches the saved file.
+    assert not _file_contains(out_path, "Falcon")
+    # (And the probe isn't vacuous on saved files: untouched text survives.)
+    assert _file_contains(out_path, "John Doe")
+
+
+def test_source_file_is_never_modified(sample_pdf_path, tmp_path):
+    before = sample_pdf_path.read_bytes()
+
+    model = RedactionModel()
+    model.open_document(str(sample_pdf_path))
+    try:
+        _redact_everywhere(model, "John Doe")
+        model.undo()
+        model.redo()
+        model.save_document(str(tmp_path / "out.pdf"))
+    finally:
+        model.close_document()
+
+    assert sample_pdf_path.read_bytes() == before
+
+
+def test_pending_redactions_are_cleared_on_reopen(sample_pdf_path):
+    model = RedactionModel()
+    model.open_document(str(sample_pdf_path))
+    try:
+        model.add_redaction(RedactionRect.create(0, (1, 1, 50, 50), "manual"))
+        model.open_document(str(sample_pdf_path))
+        assert not model.has_pending()
+        assert model.history_entries() == ["Original"]
+    finally:
+        model.close_document()

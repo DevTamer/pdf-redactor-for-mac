@@ -8,47 +8,40 @@ Usage:
     source venv/bin/activate && python redactor.py
 """
 
-import sys
 import os
 
 # When bundled as a standalone .app (py2app), Tcl/Tk needs to be pointed at
-# its script library (init.tcl, tk.tcl, ...) bundled inside the app itself,
-# rather than the hardcoded build-machine path compiled into the Tcl/Tk
-# dylibs (e.g. a Homebrew Cellar path that won't exist on an end user's
-# Mac). This must happen before `import tkinter` triggers Tcl's init. A
-# normal `python redactor.py` run from a dev venv is unaffected — RESOURCEPATH
-# is only set by py2app's bootstrap.
-if getattr(sys, "frozen", False) and "RESOURCEPATH" in os.environ:
-    _resources = os.environ["RESOURCEPATH"]
-    _tcl_lib = os.path.join(_resources, "tcl", "tcl8.6")
-    _tk_lib = os.path.join(_resources, "tcl", "tk8.6")
-    if os.path.isdir(_tcl_lib):
-        os.environ["TCL_LIBRARY"] = _tcl_lib
-    if os.path.isdir(_tk_lib):
-        os.environ["TK_LIBRARY"] = _tk_lib
+# its script library bundled inside the app itself. This must happen before
+# `import tkinter` triggers Tcl's init; it's a no-op for a normal
+# `python redactor.py` dev run. (pdfcore's package import never pulls in
+# tkinter, so importing it first is safe.)
+from pdfcore.frozen import configure_bundled_tcl_tk
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import uuid
-from collections import OrderedDict
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+configure_bundled_tcl_tk()
 
-import fitz  # PyMuPDF
-from PIL import Image, ImageTk
+import tkinter as tk  # noqa: E402  (must follow configure_bundled_tcl_tk)
+from tkinter import ttk, filedialog, messagebox  # noqa: E402
+import uuid  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+from typing import Dict, List, Optional, Tuple  # noqa: E402
+
+import fitz  # noqa: E402  PyMuPDF
+
+# Shared rendering / coordinate / history plumbing (see pdfcore's README).
+# Everything that changes document content — redaction, scrubbing, saving —
+# stays in this file.
+from pdfcore import HISTORY_LIMIT, DocumentSession, PDFRenderer  # noqa: E402
+from pdfcore.pageview import PageView  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-RENDER_DPI = 150
 DEFAULT_WINDOW_SIZE = "1200x800"
 MIN_WINDOW_WIDTH = 900
 MIN_WINDOW_HEIGHT = 600
 SIDEBAR_WIDTH = 280
 MIN_RECT_SIZE = 5  # Minimum pixel size to count as intentional draw
-CACHE_LIMIT = 5
-HISTORY_LIMIT = 20  # Max snapshots kept in the undo/redo history
 
 # A redaction rectangle must cover at least this fraction of a text line's
 # height for that line to be treated as intentionally marked. PyMuPDF
@@ -105,69 +98,40 @@ class RedactionRect:
         return f"({x0:.0f},{y0:.0f})-({x1:.0f},{y1:.0f})"
 
 
-@dataclass
-class HistoryEntry:
-    """One snapshot of the document, for session-scoped undo/redo.
-
-    Deliberately in-memory only (never written to disk as its own file):
-    a redaction's whole point is that removed content shouldn't be
-    recoverable, so history that could resurrect it must not outlive the
-    running app. Saving always writes the *current* state only — see
-    RedactionModel.save_document.
-    """
-
-    label: str
-    doc_bytes: bytes
-
-
 # ---------------------------------------------------------------------------
 # RedactionModel — document state + pending redactions
 # ---------------------------------------------------------------------------
 
-class RedactionModel:
-    """Manages the PDF document and tracks pending redactions."""
+class RedactionModel(DocumentSession):
+    """Manages the PDF document and tracks pending redactions.
+
+    The open document, current page and undo/redo history come from
+    pdfcore's DocumentSession. That history is in-memory only (never
+    written to disk): a redaction's whole point is that removed content
+    shouldn't be recoverable, so history that could resurrect it must not
+    outlive the running app. Saving always writes the *current* state only
+    — see save_document.
+    """
 
     def __init__(self):
-        self.doc: Optional[fitz.Document] = None
-        self.file_path: Optional[str] = None
-        self.current_page: int = 0
         self.pending: Dict[int, List[RedactionRect]] = {}  # page_num -> [rects]
-        self._history: List[HistoryEntry] = []
-        self._history_index: int = -1
+        super().__init__(history_limit=HISTORY_LIMIT)
 
     # -- Document lifecycle ---------------------------------------------------
 
     def open_document(self, path: str) -> None:
-        self.close_document()
-        self.doc = fitz.open(path)
-        self.file_path = path
-        self.current_page = 0
+        super().open_document(path)
         self.pending = {}
-        self._history = [HistoryEntry(label="Original", doc_bytes=self.doc.tobytes())]
-        self._history_index = 0
 
     def close_document(self) -> None:
-        if self.doc:
-            self.doc.close()
-        self.doc = None
-        self.file_path = None
-        self.current_page = 0
+        super().close_document()
         self.pending = {}
-        self._history = []
-        self._history_index = -1
 
     @property
     def is_applied(self) -> bool:
         """Whether the *currently loaded* state includes any applied
-        redactions (i.e. we're past the "Original" history entry)."""
-        return self._history_index > 0
-
-    @property
-    def page_count(self) -> int:
-        return len(self.doc) if self.doc else 0
-
-    def get_page(self, page_num: int) -> fitz.Page:
-        return self.doc[page_num]
+        redactions (i.e. we're past the first history entry)."""
+        return self.history_index > 0
 
     # -- Redaction management -------------------------------------------------
 
@@ -230,8 +194,8 @@ class RedactionModel:
 
         Permanent in the sense that the source content is actually gone
         from the document — but undoable for the rest of this session via
-        undo()/redo()/jump_to_history() (see class docstring on
-        HistoryEntry for why that's a memory-only, per-session thing).
+        undo()/redo()/jump_to_history() (see the class docstring for
+        why that's a memory-only, per-session thing).
         """
         count = 0
         for page_num, rects in self.pending.items():
@@ -247,7 +211,7 @@ class RedactionModel:
         self.pending.clear()
         if count:
             label = f"Applied {count} redaction{'s' if count != 1 else ''}"
-            self._snapshot(label)
+            self.record_snapshot(label)
         return count
 
     @staticmethod
@@ -299,152 +263,24 @@ class RedactionModel:
         self.doc.scrub()
         self.doc.save(path, garbage=3, deflate=True)
 
-    # -- Undo / redo history ---------------------------------------------------
-    #
-    # A lightweight, in-memory "history palette" (Photoshop-style): each
-    # applied-redaction action becomes one entry holding a full snapshot of
-    # the document at that point. Undo/redo/jump_to_history swap the live
-    # document for an earlier or later snapshot. This is scoped to the
-    # current app session on purpose — see HistoryEntry's docstring.
-
-    def _snapshot(self, label: str) -> None:
-        """Record the current document state as a new history entry,
-        discarding any redo branch beyond the current point."""
-        del self._history[self._history_index + 1:]
-        self._history.append(HistoryEntry(label=label, doc_bytes=self.doc.tobytes()))
-        if len(self._history) > HISTORY_LIMIT:
-            del self._history[:len(self._history) - HISTORY_LIMIT]
-        self._history_index = len(self._history) - 1
-
-    def _load_history_entry(self, index: int) -> str:
-        entry = self._history[index]
-        old_page = self.current_page
-        self.doc.close()
-        self.doc = fitz.open(stream=entry.doc_bytes, filetype="pdf")
-        self.current_page = min(old_page, self.page_count - 1) if self.page_count else 0
-        self._history_index = index
-        return entry.label
-
-    @property
-    def history_index(self) -> int:
-        return self._history_index
-
-    def history_entries(self) -> List[str]:
-        """Labels of every history entry, oldest first."""
-        return [e.label for e in self._history]
-
-    def can_undo(self) -> bool:
-        return self._history_index > 0
-
-    def can_redo(self) -> bool:
-        return self._history_index < len(self._history) - 1
-
-    def undo(self) -> str:
-        """Revert to the state before the most recent apply. Returns the
-        label of the state now current."""
-        if not self.can_undo():
-            raise ValueError("Nothing to undo")
-        return self._load_history_entry(self._history_index - 1)
-
-    def redo(self) -> str:
-        """Re-apply the most recently undone state. Returns its label."""
-        if not self.can_redo():
-            raise ValueError("Nothing to redo")
-        return self._load_history_entry(self._history_index + 1)
-
-    def jump_to_history(self, index: int) -> str:
-        """Jump directly to an arbitrary history entry (as clicking an
-        entry in a Photoshop-style history panel would)."""
-        if not (0 <= index < len(self._history)):
-            raise IndexError(f"History index {index} out of range")
-        return self._load_history_entry(index)
-
 
 # ---------------------------------------------------------------------------
-# PDFRenderer — converts PDF pages to display images
+# CanvasController — mouse interaction + redaction overlays
 # ---------------------------------------------------------------------------
 
-class PDFRenderer:
-    """Renders PDF pages to PIL Images with an LRU cache."""
-
-    def __init__(self):
-        self._cache: OrderedDict[int, Image.Image] = OrderedDict()
-
-    def render_page(self, page: fitz.Page, page_num: int) -> Image.Image:
-        """Render a page at RENDER_DPI. Returns a PIL Image."""
-        if page_num in self._cache:
-            self._cache.move_to_end(page_num)
-            return self._cache[page_num]
-
-        pix = page.get_pixmap(dpi=RENDER_DPI)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-        self._cache[page_num] = img
-        if len(self._cache) > CACHE_LIMIT:
-            self._cache.popitem(last=False)
-
-        return img
-
-    def invalidate(self, page_num: Optional[int] = None) -> None:
-        if page_num is not None:
-            self._cache.pop(page_num, None)
-        else:
-            self._cache.clear()
-
-
-# ---------------------------------------------------------------------------
-# CoordinateMapper — pure PDF <-> canvas coordinate math (no Tk dependency)
-# ---------------------------------------------------------------------------
-
-class CoordinateMapper:
-    """Converts between PDF point space and displayed canvas pixel space.
-
-    Kept free of any Tk dependency so it can be unit tested without a live
-    display/canvas.
-    """
-
-    def __init__(self, total_scale: float = 1.0):
-        self.total_scale = total_scale
-
-    def canvas_to_pdf(self, cx: float, cy: float) -> Tuple[float, float]:
-        if self.total_scale == 0:
-            return 0.0, 0.0
-        return cx / self.total_scale, cy / self.total_scale
-
-    def pdf_to_canvas(self, px: float, py: float) -> Tuple[float, float]:
-        return px * self.total_scale, py * self.total_scale
-
-    @staticmethod
-    def render_scale() -> float:
-        return RENDER_DPI / 72.0
-
-    @staticmethod
-    def compute_total_scale(image_width: int, fit_width: int) -> float:
-        """Combine render DPI scale with the display-fit scale."""
-        display_scale = fit_width / image_width
-        return CoordinateMapper.render_scale() * display_scale
-
-
-# ---------------------------------------------------------------------------
-# CanvasController — mouse interaction + coordinate mapping
-# ---------------------------------------------------------------------------
-
-class CanvasController:
-    """Handles canvas drawing, mouse events, and coordinate mapping."""
+class CanvasController(PageView):
+    """Handles redaction drawing, mouse events, and overlays on top of
+    pdfcore's PageView (which does page display and coordinate mapping)."""
 
     def __init__(self, canvas: tk.Canvas, model: RedactionModel,
                  renderer: PDFRenderer, on_change: callable):
-        self.canvas = canvas
+        super().__init__(canvas, renderer)
         self.model = model
-        self.renderer = renderer
         self.on_change = on_change  # callback when redactions change
 
-        self._mapper = CoordinateMapper()
         self._drawing: bool = False
         self._draw_start: Optional[Tuple[float, float]] = None
         self._temp_rect_id: Optional[int] = None
-        self._photo: Optional[ImageTk.PhotoImage] = None  # prevent GC
-        self._pil_image: Optional[Image.Image] = None
 
         # Maps canvas item id -> redaction id
         self._canvas_to_rid: Dict[int, str] = {}
@@ -461,22 +297,10 @@ class CanvasController:
         self.canvas.bind("<Button-2>", self._on_right_click)
         self.canvas.bind("<Control-Button-1>", self._on_right_click)
 
-    # -- Coordinate helpers ---------------------------------------------------
-
-    def _event_coords(self, event) -> Tuple[float, float]:
-        """Get scroll-aware canvas coordinates from an event."""
-        return self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-
-    def canvas_to_pdf(self, cx: float, cy: float) -> Tuple[float, float]:
-        return self._mapper.canvas_to_pdf(cx, cy)
-
-    def pdf_to_canvas(self, px: float, py: float) -> Tuple[float, float]:
-        return self._mapper.pdf_to_canvas(px, py)
-
     # -- Drawing events -------------------------------------------------------
 
     def _on_press(self, event) -> None:
-        cx, cy = self._event_coords(event)
+        cx, cy = self.event_coords(event)
         self._drawing = True
         self._draw_start = (cx, cy)
         self._temp_rect_id = self.canvas.create_rectangle(
@@ -488,7 +312,7 @@ class CanvasController:
     def _on_drag(self, event) -> None:
         if not self._drawing or self._temp_rect_id is None:
             return
-        cx, cy = self._event_coords(event)
+        cx, cy = self.event_coords(event)
         x0, y0 = self._draw_start
         self.canvas.coords(self._temp_rect_id, x0, y0, cx, cy)
 
@@ -497,7 +321,7 @@ class CanvasController:
             return
         self._drawing = False
 
-        cx, cy = self._event_coords(event)
+        cx, cy = self.event_coords(event)
         x0, y0 = self._draw_start
 
         # Clean up temp rectangle
@@ -531,7 +355,7 @@ class CanvasController:
 
     def _on_right_click(self, event) -> None:
         """Right-click to remove a redaction rectangle."""
-        cx, cy = self._event_coords(event)
+        cx, cy = self.event_coords(event)
         items = self.canvas.find_overlapping(cx - 3, cy - 3, cx + 3, cy + 3)
         for item in items:
             if item in self._canvas_to_rid:
@@ -600,35 +424,13 @@ class CanvasController:
         if not self.model.doc:
             return
 
-        page = self.model.get_page(page_num)
-        pil_image = self.renderer.render_page(page, page_num)
-        self._pil_image = pil_image
-
-        # Calculate scale to fit canvas width
-        if fit_width is None:
-            fit_width = max(self.canvas.winfo_width() - 20, 400)
-
-        self._mapper.total_scale = CoordinateMapper.compute_total_scale(
-            pil_image.width, fit_width)
-        display_scale = fit_width / pil_image.width
-
-        # Scale image for display
-        new_w = int(pil_image.width * display_scale)
-        new_h = int(pil_image.height * display_scale)
-        display_img = pil_image.resize((new_w, new_h), Image.LANCZOS)
-
-        # Keep reference to prevent garbage collection
-        self._photo = ImageTk.PhotoImage(display_img)
-
-        # Update canvas
-        self.canvas.delete("all")
+        # Renders, fits to width, updates the coordinate mapping, and clears
+        # the canvas (overlays included) — so the overlay bookkeeping is
+        # reset and every overlay for this page redrawn afterwards.
+        self.show_page(self.model.get_page(page_num), page_num, fit_width)
         self._canvas_to_rid.clear()
         self._rid_to_canvas.clear()
         self._selected_rid = None
-
-        self.canvas.create_image(0, 0, anchor="nw", image=self._photo,
-                                 tags=("page_image",))
-        self.canvas.config(scrollregion=(0, 0, new_w, new_h))
 
         # Draw redaction overlays for this page
         self.draw_all_overlays(page_num)

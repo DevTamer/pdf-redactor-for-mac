@@ -12,9 +12,22 @@
 # prebuilt PDF Redactor.app from the Releases page instead of running
 # this script — it doesn't depend on any of this.)
 
+# Usage:
+#   ./setup.sh                       # pinned pdfcore release (requirements.txt)
+#   ./setup.sh --with-local-pdfcore  # ...then swap in an editable install of
+#                                    # ../pdfcore, for working on both at once
+
 set -e
 
 cd "$(dirname "$0")"
+
+LOCAL_PDFCORE=0
+for arg in "$@"; do
+    case "$arg" in
+        --with-local-pdfcore) LOCAL_PDFCORE=1 ;;
+        *) echo "Unknown option: $arg"; exit 1 ;;
+    esac
+done
 
 PY_FORMULA="python-tk@3.11"
 PY_VERSION="3.11"
@@ -59,6 +72,16 @@ pip install --upgrade pip -q
 
 echo "Installing dependencies..."
 pip install -r requirements.txt -q
+
+if [ "$LOCAL_PDFCORE" = 1 ]; then
+    if [ ! -f ../pdfcore/pyproject.toml ]; then
+        echo "Error: --with-local-pdfcore expects a pdfcore checkout at ../pdfcore"
+        echo "(git clone https://github.com/DevTamer/pdfcore.git ../pdfcore)."
+        exit 1
+    fi
+    echo "Installing ../pdfcore in editable mode (overrides the pinned release)..."
+    pip install -e ../pdfcore -q
+fi
 
 echo "Verifying Tk actually works in this environment..."
 TK_CHECK_LOG="$(mktemp)"

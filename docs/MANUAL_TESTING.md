@@ -1,10 +1,11 @@
 # Manual GUI testing checklist
 
-The automated `pytest` suite covers `RedactionModel`, `PDFRenderer`, and
-`CoordinateMapper` — the logic that doesn't need a live window. It does not,
-and cannot, drive real Tk widgets (clicks, drags, dialogs). Run this
-checklist by hand against the actual app before cutting a release or after
-any change that touches `CanvasController` / `RedactorApp`.
+The automated `pytest` suite covers `RedactionModel` and the app's handlers.
+It simulates mouse events, but it can't click real widgets or answer native
+dialogs. Rendering and coordinate math are tested in pdfcore. Run this
+checklist by hand against the actual app before cutting a release, after any
+change that touches `CanvasController` / `RedactorApp`, and after bumping
+the pinned pdfcore version.
 
 You'll need at least one real (non-sensitive) test PDF with a few pages and
 some repeated text on it — e.g. print any document to PDF, or reuse a public
