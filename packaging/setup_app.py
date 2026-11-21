@@ -92,7 +92,7 @@ DATA_FILES += bundle_dir_as_data_files(
 OPTIONS = {
     "argv_emulation": False,
     "iconfile": "icon.icns",
-    "packages": ["fitz", "PIL", "pdfcore"],
+    "packages": ["pymupdf", "PIL", "pdfcore"],
     "plist": {
         "CFBundleName": "PDF Redactor",
         "CFBundleDisplayName": "PDF Redactor",

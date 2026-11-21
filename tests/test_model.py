@@ -2,7 +2,7 @@
 search, apply, and save.
 """
 
-import fitz
+import pymupdf
 import pytest
 
 from redactor import RedactionModel, RedactionRect
@@ -233,7 +233,7 @@ def test_save_document_persists_redactions(sample_pdf_path, tmp_path):
         model.close_document()
 
     assert out_path.exists()
-    reopened = fitz.open(str(out_path))
+    reopened = pymupdf.open(str(out_path))
     try:
         all_text = "".join(p.get_text() for p in reopened)
         assert "Falcon" not in all_text
@@ -254,7 +254,7 @@ def test_save_document_persists_redactions(sample_pdf_path, tmp_path):
 def _all_decompressed_streams(path) -> bytes:
     """Every stream in the file, decompressed, concatenated. Catches text
     that's still present in the file but not reachable via get_text()."""
-    doc = fitz.open(str(path))
+    doc = pymupdf.open(str(path))
     try:
         chunks = []
         for xref in range(1, doc.xref_length()):
@@ -338,7 +338,7 @@ def test_save_strips_metadata(tmp_path):
     """save_document scrubs: document metadata (author, title, ...) can
     identify people just as well as page text can."""
     source = tmp_path / "with_metadata.pdf"
-    doc = fitz.open()
+    doc = pymupdf.open()
     doc.new_page().insert_text((50, 100), "body text")
     doc.set_metadata({"author": "Jane Secret", "title": "Internal memo",
                       "subject": "Do not share"})
@@ -354,7 +354,7 @@ def test_save_strips_metadata(tmp_path):
     finally:
         model.close_document()
 
-    reopened = fitz.open(str(out_path))
+    reopened = pymupdf.open(str(out_path))
     try:
         meta = reopened.metadata
         assert not meta.get("author")

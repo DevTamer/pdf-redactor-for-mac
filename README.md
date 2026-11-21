@@ -130,7 +130,7 @@ In `redactor.py`:
 
 - `RedactionModel` tracks pending redactions per page and runs
   search/apply/save. It builds on pdfcore's `DocumentSession`, which holds
-  the open `fitz.Document`, the current page, and the in-memory undo/redo
+  the open `pymupdf.Document`, the current page, and the in-memory undo/redo
   history (one full document snapshot per apply). No UI code.
 - `CanvasController` handles drawing, selecting and removing redaction
   rectangles with the mouse. It builds on pdfcore's `PageView`, which shows

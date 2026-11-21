@@ -25,7 +25,7 @@ import uuid  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 from typing import Dict, List, Optional, Tuple  # noqa: E402
 
-import fitz  # noqa: E402  PyMuPDF
+import pymupdf  # noqa: E402
 
 # Shared rendering / coordinate / history plumbing (see pdfcore's README).
 # Everything that changes document content — redaction, scrubbing, saving —
@@ -178,8 +178,8 @@ class RedactionModel(DocumentSession):
     # -- Search ---------------------------------------------------------------
 
     def search_text(self, text: str) -> Dict[int, list]:
-        """Search all pages for text. Returns {page_num: [fitz.Rect]}."""
-        fitz.TOOLS.set_small_glyph_heights(True)
+        """Search all pages for text. Returns {page_num: [pymupdf.Rect]}."""
+        pymupdf.TOOLS.set_small_glyph_heights(True)
         results: Dict[int, list] = {}
         for i in range(self.page_count):
             page = self.doc[i]
@@ -203,12 +203,12 @@ class RedactionModel(DocumentSession):
             page = self.doc[page_num]
             line_bboxes = self._page_line_bboxes(page)
             for r in rects:
-                fitz_rect = fitz.Rect(r.pdf_rect)
-                fitz_rect = self._snap_to_text_lines(fitz_rect, line_bboxes)
-                page.add_redact_annot(fitz_rect, fill=APPLIED_FILL_RGB)
+                redact_rect = pymupdf.Rect(r.pdf_rect)
+                redact_rect = self._snap_to_text_lines(redact_rect, line_bboxes)
+                page.add_redact_annot(redact_rect, fill=APPLIED_FILL_RGB)
                 count += 1
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
-                                  graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED)
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
+                                  graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED)
         self.pending.clear()
         if count:
             label = f"Applied {count} redaction{'s' if count != 1 else ''}"
@@ -216,7 +216,7 @@ class RedactionModel(DocumentSession):
         return count
 
     @staticmethod
-    def _page_line_bboxes(page: fitz.Page) -> List[Tuple[float, float, float, float]]:
+    def _page_line_bboxes(page: pymupdf.Page) -> List[Tuple[float, float, float, float]]:
         """Every text line's bounding box on a page, as (x0, y0, x1, y1)."""
         boxes = []
         for block in page.get_text("dict")["blocks"]:
@@ -226,9 +226,9 @@ class RedactionModel(DocumentSession):
 
     @staticmethod
     def _snap_to_text_lines(
-        rect: fitz.Rect,
+        rect: pymupdf.Rect,
         line_bboxes: List[Tuple[float, float, float, float]],
-    ) -> fitz.Rect:
+    ) -> pymupdf.Rect:
         """Tighten a redaction rectangle's vertical extent to the text
         line(s) it substantially (LINE_OVERLAP_THRESHOLD+) covers.
 
@@ -253,7 +253,7 @@ class RedactionModel(DocumentSession):
                 covered_y1 = ly1 if covered_y1 is None else max(covered_y1, ly1)
         if covered_y0 is None:
             return rect
-        return fitz.Rect(rect.x0, covered_y0, rect.x1, covered_y1)
+        return pymupdf.Rect(rect.x0, covered_y0, rect.x1, covered_y1)
 
     def save_document(self, path: str) -> None:
         """Save with scrub + garbage collection for true data removal.
@@ -1056,6 +1056,6 @@ class RedactorApp:
 
 if __name__ == "__main__":
     # Enable tight text bounding boxes for accurate redaction
-    fitz.TOOLS.set_small_glyph_heights(True)
+    pymupdf.TOOLS.set_small_glyph_heights(True)
     app = RedactorApp()
     app.run()

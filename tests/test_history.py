@@ -9,7 +9,7 @@ mechanics are also unit-tested in pdfcore; these tests cover them as the
 redactor actually uses them.
 """
 
-import fitz
+import pymupdf
 import pytest
 
 from redactor import RedactionModel, RedactionRect, HISTORY_LIMIT
@@ -221,7 +221,7 @@ def test_save_after_undo_writes_the_reverted_state(sample_pdf_path, tmp_path):
     finally:
         model.close_document()
 
-    reopened = fitz.open(str(out_path))
+    reopened = pymupdf.open(str(out_path))
     try:
         assert "John Doe" in reopened[0].get_text()
     finally:

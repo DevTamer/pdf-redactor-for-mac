@@ -38,3 +38,16 @@ def test_tcl_tk_fixup_runs_before_tkinter_is_imported():
     assert result.returncode == 0, result.stderr
     # Called exactly once, and tkinter wasn't loaded yet at that point.
     assert result.stdout.strip() == "[False]"
+
+
+def test_uses_pymupdf_not_the_deprecated_fitz_alias():
+    """PyMuPDF's `fitz` import name is deprecated; neither the app nor
+    pdfcore should load it."""
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, redactor; "
+         "print('pymupdf' in sys.modules, 'fitz' in sys.modules)"],
+        cwd=str(REPO_ROOT), capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "True False"
