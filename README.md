@@ -102,6 +102,11 @@ git clone https://github.com/DevTamer/pdfcore.git ../pdfcore
 ./setup.sh --with-local-pdfcore     # or: pip install -e ../pdfcore
 ```
 
+This works even when the pinned tag isn't published yet. Note that running
+a plain `pip install -r requirements.txt` afterwards quietly swaps the
+editable install back to the pinned release. Re-run
+`pip install -e ../pdfcore` if that happens.
+
 Before releasing the redactor against a new pdfcore version, tag that
 pdfcore release, bump the pin in `requirements.txt`, and let the build
 script's test run pass (see below).

@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import redactor  # noqa: E402  (after sys.path setup above)
+from conftest import PAGE_WIDTH  # noqa: E402
 
 
 def _widget_state(widget) -> str:
@@ -133,14 +134,21 @@ def _drag(controller, x0, y0, x1, y1):
     controller._on_release(_MouseEvent(x1, y1))
 
 
+def _expected_scale(fit_width):
+    """Canvas pixels per PDF point for a page shown ``fit_width`` px wide,
+    worked out from the page size alone (not from the code under test), so
+    a scaling bug in the mapper can't cancel itself out."""
+    return fit_width / PAGE_WIDTH
+
+
 def test_drawn_rectangle_redacts_exactly_the_text_under_it(app, sample_pdf_path):
-    _open_in_app(app, sample_pdf_path)
+    _open_in_app(app, sample_pdf_path, fit_width=600)
     ctrl = app.controller
+    scale = _expected_scale(600)
 
     # Where "John Doe" is on the page, in PDF points, then on screen.
     target = app.model.get_page(0).search_for("John Doe")[0]
-    x0, y0 = ctrl.pdf_to_canvas(target.x0, target.y0)
-    x1, y1 = ctrl.pdf_to_canvas(target.x1, target.y1)
+    x0, y0, x1, y1 = (v * scale for v in target)
 
     # Drag over it (bottom-right to top-left, to check normalisation too).
     _drag(ctrl, x1 + 1, y1 + 1, x0 - 1, y0 - 1)
@@ -149,7 +157,7 @@ def test_drawn_rectangle_redacts_exactly_the_text_under_it(app, sample_pdf_path)
     assert len(pending) == 1
     assert pending[0].source == "manual"
     px0, py0, px1, py1 = pending[0].pdf_rect
-    tolerance = 2 / ctrl.mapper.total_scale  # 1px of slop each side, in points
+    tolerance = 2 / scale  # 1px of slop each side, plus rounding, in points
     assert px0 == pytest.approx(target.x0, abs=tolerance)
     assert py0 == pytest.approx(target.y0, abs=tolerance)
     assert px1 == pytest.approx(target.x1, abs=tolerance)
@@ -163,6 +171,33 @@ def test_drawn_rectangle_redacts_exactly_the_text_under_it(app, sample_pdf_path)
     assert "John Doe" not in text
     assert "CONFIDENTIAL" in text
     assert "123-45-6789" in text
+
+
+def test_drawing_while_scrolled_maps_to_the_right_place(app, sample_pdf_path):
+    """Mouse events arrive in window coordinates; once the canvas is
+    scrolled they must be offset by the scroll position."""
+    _open_in_app(app, sample_pdf_path, fit_width=1200)  # page taller than view
+    ctrl = app.controller
+    scale = _expected_scale(1200)
+    app.canvas.configure(height=300)
+    app.root.update_idletasks()
+    app.canvas.yview_moveto(0.1)
+    app.root.update_idletasks()
+    scroll_y = app.canvas.canvasy(0)
+    assert scroll_y > 0, "canvas didn't scroll; test setup is broken"
+
+    target = app.model.get_page(0).search_for("John Doe")[0]
+    x0, y0, x1, y1 = (v * scale for v in target)
+    # Window coordinates = canvas coordinates minus the scroll offset.
+    _drag(ctrl, x0 - 1, y0 - 1 - scroll_y, x1 + 1, y1 + 1 - scroll_y)
+
+    px0, py0, px1, py1 = app.model.all_redactions()[0].pdf_rect
+    tolerance = 2 / scale
+    assert py0 == pytest.approx(target.y0, abs=tolerance)
+    assert py1 == pytest.approx(target.y1, abs=tolerance)
+
+    app._do_apply()
+    assert "John Doe" not in app.model.get_page(0).get_text()
 
 
 def test_tiny_drag_is_ignored(app, sample_pdf_path):

@@ -30,7 +30,7 @@ import fitz  # noqa: E402  PyMuPDF
 # Shared rendering / coordinate / history plumbing (see pdfcore's README).
 # Everything that changes document content — redaction, scrubbing, saving —
 # stays in this file.
-from pdfcore import HISTORY_LIMIT, DocumentSession, PDFRenderer  # noqa: E402
+from pdfcore import DocumentSession, PDFRenderer  # noqa: E402
 from pdfcore.pageview import PageView  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -42,6 +42,7 @@ MIN_WINDOW_WIDTH = 900
 MIN_WINDOW_HEIGHT = 600
 SIDEBAR_WIDTH = 280
 MIN_RECT_SIZE = 5  # Minimum pixel size to count as intentional draw
+HISTORY_LIMIT = 20  # Max snapshots kept in the undo/redo history
 
 # A redaction rectangle must cover at least this fraction of a text line's
 # height for that line to be treated as intentionally marked. PyMuPDF

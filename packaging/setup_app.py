@@ -1,8 +1,12 @@
 """py2app build script for PDF Redactor.
 
-Run via build_app.sh, or manually from this directory:
-
-    python setup_app.py py2app
+Run it via build_app.sh, which builds in a fresh venv from the pinned
+requirements.txt after running the tests. Running it by hand
+(`python setup_app.py py2app` from this directory) also works, but it
+refuses to build from an environment where pdfcore is an editable install
+(e.g. a dev venv set up with `./setup.sh --with-local-pdfcore`): that would
+bundle whatever is in your local pdfcore checkout instead of the pinned
+release.
 
 Produces dist/PDF Redactor.app.
 
@@ -19,13 +23,34 @@ bundle, and redactor.py points TCL_LIBRARY/TK_LIBRARY at them when frozen
 (via pdfcore.frozen.configure_bundled_tcl_tk).
 """
 
+import json
 import os
 import subprocess
 import sys
+from importlib import metadata
 
 from setuptools import setup
 
 APP = ["../redactor.py"]
+
+
+def require_pinned_pdfcore() -> None:
+    """Refuse to bundle an editable (local checkout) pdfcore."""
+    try:
+        dist = metadata.distribution("pdfcore")
+    except metadata.PackageNotFoundError:
+        sys.exit("pdfcore isn't installed; pip install -r ../requirements.txt")
+    direct_url = json.loads(dist.read_text("direct_url.json") or "{}")
+    if direct_url.get("dir_info", {}).get("editable"):
+        sys.exit(
+            "pdfcore is an editable install of a local checkout "
+            f"({direct_url.get('url')}).\n"
+            "Release builds must use the version pinned in requirements.txt "
+            "-- run packaging/build_app.sh instead."
+        )
+
+
+require_pinned_pdfcore()
 
 
 def brew_prefix(formula: str) -> str:

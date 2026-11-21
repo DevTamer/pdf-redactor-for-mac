@@ -12,10 +12,10 @@
 # prebuilt PDF Redactor.app from the Releases page instead of running
 # this script — it doesn't depend on any of this.)
 
-# Usage:
-#   ./setup.sh                       # pinned pdfcore release (requirements.txt)
-#   ./setup.sh --with-local-pdfcore  # ...then swap in an editable install of
-#                                    # ../pdfcore, for working on both at once
+USAGE="Usage:
+  ./setup.sh                       use the pdfcore release pinned in requirements.txt
+  ./setup.sh --with-local-pdfcore  use an editable install of ../pdfcore instead,
+                                   for working on both repos at once"
 
 set -e
 
@@ -25,9 +25,16 @@ LOCAL_PDFCORE=0
 for arg in "$@"; do
     case "$arg" in
         --with-local-pdfcore) LOCAL_PDFCORE=1 ;;
-        *) echo "Unknown option: $arg"; exit 1 ;;
+        -h|--help) echo "$USAGE"; exit 0 ;;
+        *) echo "Unknown option: $arg" >&2; echo "$USAGE" >&2; exit 1 ;;
     esac
 done
+
+if [ "$LOCAL_PDFCORE" = 1 ] && [ ! -f ../pdfcore/pyproject.toml ]; then
+    echo "Error: --with-local-pdfcore expects a pdfcore checkout at ../pdfcore" >&2
+    echo "(git clone https://github.com/DevTamer/pdfcore.git ../pdfcore)." >&2
+    exit 1
+fi
 
 PY_FORMULA="python-tk@3.11"
 PY_VERSION="3.11"
@@ -71,16 +78,18 @@ echo "Upgrading pip..."
 pip install --upgrade pip -q
 
 echo "Installing dependencies..."
-pip install -r requirements.txt -q
-
 if [ "$LOCAL_PDFCORE" = 1 ]; then
-    if [ ! -f ../pdfcore/pyproject.toml ]; then
-        echo "Error: --with-local-pdfcore expects a pdfcore checkout at ../pdfcore"
-        echo "(git clone https://github.com/DevTamer/pdfcore.git ../pdfcore)."
-        exit 1
-    fi
-    echo "Installing ../pdfcore in editable mode (overrides the pinned release)..."
+    # Skip the pinned pdfcore line entirely: its tag may not be published
+    # yet (the usual case when changing both repos together), or you may be
+    # offline.
+    REQS_WITHOUT_PDFCORE="$(mktemp)"
+    grep -v '^pdfcore' requirements.txt > "$REQS_WITHOUT_PDFCORE"
+    pip install -r "$REQS_WITHOUT_PDFCORE" -q
+    rm -f "$REQS_WITHOUT_PDFCORE"
+    echo "Installing ../pdfcore in editable mode..."
     pip install -e ../pdfcore -q
+else
+    pip install -r requirements.txt -q
 fi
 
 echo "Verifying Tk actually works in this environment..."

@@ -247,7 +247,9 @@ def test_save_document_persists_redactions(sample_pdf_path, tmp_path):
 #
 # The open document and the undo/redo history now come from pdfcore's
 # DocumentSession. These pin down the redactor-level guarantees that rely
-# on it, so a pdfcore upgrade that broke them would fail here.
+# on it: what reaches the saved file, and that the source is never touched.
+# (Rendering/coordinate alignment is covered by pdfcore's own tests and by
+# the drawing tests in test_gui_smoke.py.)
 
 def _all_decompressed_streams(path) -> bytes:
     """Every stream in the file, decompressed, concatenated. Catches text
@@ -330,3 +332,34 @@ def test_pending_redactions_are_cleared_on_reopen(sample_pdf_path):
         assert model.history_entries() == ["Original"]
     finally:
         model.close_document()
+
+
+def test_save_strips_metadata(tmp_path):
+    """save_document scrubs: document metadata (author, title, ...) can
+    identify people just as well as page text can."""
+    source = tmp_path / "with_metadata.pdf"
+    doc = fitz.open()
+    doc.new_page().insert_text((50, 100), "body text")
+    doc.set_metadata({"author": "Jane Secret", "title": "Internal memo",
+                      "subject": "Do not share"})
+    doc.save(str(source))
+    doc.close()
+
+    model = RedactionModel()
+    model.open_document(str(source))
+    try:
+        assert model.doc.metadata["author"] == "Jane Secret"  # probe sanity
+        out_path = tmp_path / "saved.pdf"
+        model.save_document(str(out_path))
+    finally:
+        model.close_document()
+
+    reopened = fitz.open(str(out_path))
+    try:
+        meta = reopened.metadata
+        assert not meta.get("author")
+        assert not meta.get("title")
+        assert not meta.get("subject")
+    finally:
+        reopened.close()
+    assert not _file_contains(out_path, "Jane Secret")

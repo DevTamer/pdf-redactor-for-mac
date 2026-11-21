@@ -4,7 +4,9 @@ Each apply becomes one history entry holding a full snapshot of the
 document. undo()/redo()/jump_to_history() swap the live document for an
 earlier or later snapshot — this is the "Photoshop history palette"
 feature, deliberately scoped to the current app session (see
-HistoryEntry's docstring in redactor.py for why).
+RedactionModel's docstring in redactor.py for why). The generic history
+mechanics are also unit-tested in pdfcore; these tests cover them as the
+redactor actually uses them.
 """
 
 import fitz
