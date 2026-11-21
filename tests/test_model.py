@@ -363,3 +363,26 @@ def test_save_strips_metadata(tmp_path):
     finally:
         reopened.close()
     assert not _file_contains(out_path, "Jane Secret")
+
+
+def test_failed_open_keeps_current_document_and_pending(sample_pdf_path, tmp_path):
+    """Picking an unreadable file must not throw away the open document or
+    its pending (unapplied) redactions."""
+    locked = tmp_path / "locked.pdf"
+    doc = pymupdf.open()
+    doc.new_page().insert_text((50, 100), "secret")
+    doc.save(str(locked), encryption=pymupdf.PDF_ENCRYPT_AES_256,
+             user_pw="pw", owner_pw="pw")
+    doc.close()
+
+    model = RedactionModel()
+    model.open_document(str(sample_pdf_path))
+    try:
+        model.add_redaction(RedactionRect.create(0, (1, 1, 50, 50), "manual"))
+        with pytest.raises(ValueError, match="password-protected"):
+            model.open_document(str(locked))
+        assert model.file_path == str(sample_pdf_path)
+        assert model.has_pending()
+        assert "John Doe" in model.get_page(0).get_text()
+    finally:
+        model.close_document()

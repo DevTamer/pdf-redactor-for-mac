@@ -4,4 +4,4 @@ Pillow==11.3.0
 # Pinned to an exact tag: only move it after this app's tests pass against
 # the new version. For local development against a pdfcore checkout, see
 # "Working on pdfcore at the same time" in the README.
-pdfcore @ git+https://github.com/DevTamer/pdfcore.git@v0.1.1
+pdfcore @ git+https://github.com/DevTamer/pdfcore.git@v0.1.3

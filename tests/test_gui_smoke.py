@@ -236,3 +236,22 @@ def test_right_click_removes_the_redaction_under_the_pointer(app, sample_pdf_pat
 
     assert not app.model.has_pending()
     assert app.canvas.find_withtag("redaction") == ()
+
+
+def test_failed_open_shows_error_and_keeps_document(app, sample_pdf_path,
+                                                    tmp_path, monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    junk = tmp_path / "junk.pdf"
+    junk.write_bytes(b"not a pdf")
+    errors = []
+    monkeypatch.setattr(redactor.filedialog, "askopenfilename",
+                        lambda **k: str(junk))
+    monkeypatch.setattr(redactor.messagebox, "showerror",
+                        lambda title, message: errors.append(message))
+
+    app._on_open()
+
+    assert errors and "Could not open PDF" in errors[0]
+    assert app.model.file_path == str(sample_pdf_path)
+    assert app.model.has_pending()
