@@ -122,9 +122,14 @@ sample PDF.
 
 ## Closing / edge cases
 
-- [ ] **Close Document** (`Cmd+W`) with pending redactions asks to discard;
-      declining keeps the document and its pending redactions open.
-- [ ] Opening a second PDF while one is already open replaces it cleanly
-      (no stale overlays/pending list from the previous document).
+- [ ] **Close Document** (`Cmd+W`) with pending redactions asks whether to
+      save first; Cancel keeps the document and its pending redactions open.
+- [ ] `Cmd+Q`, PDF Redactor → Quit, and the window's close button all ask
+      the same when there are pending or applied-but-unsaved redactions;
+      Cancel keeps the app open, Yes saves and then quits. With everything
+      saved they quit straight away.
+- [ ] Opening a second PDF with unsaved redactions asks first. Once it's
+      open it replaces the first cleanly (no stale overlays or pending list
+      from the previous document).
 - [ ] Opening a non-PDF or corrupt file shows an error dialog instead of
       crashing.

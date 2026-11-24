@@ -116,6 +116,9 @@ class RedactionModel(DocumentSession):
 
     def __init__(self):
         self.pending: Dict[int, List[RedactionRect]] = {}  # page_num -> [rects]
+        # The history entry last saved (or opened): unsaved work is
+        # anything since then, or pending marks.
+        self._saved_entry = None
         super().__init__(history_limit=HISTORY_LIMIT)
 
     # -- Document lifecycle ---------------------------------------------------
@@ -123,10 +126,19 @@ class RedactionModel(DocumentSession):
     def open_document(self, path: str) -> None:
         super().open_document(path)
         self.pending = {}
+        self._saved_entry = self.history.current
 
     def close_document(self) -> None:
         super().close_document()
         self.pending = {}
+        self._saved_entry = None
+
+    @property
+    def has_unsaved_work(self) -> bool:
+        """Pending marks, or applied redactions not yet saved to a file.
+        Undoing back to what was last saved counts as saved again."""
+        return self.doc is not None and (
+            self.has_pending() or self.history.current is not self._saved_entry)
 
     @property
     def is_applied(self) -> bool:
@@ -263,6 +275,7 @@ class RedactionModel(DocumentSession):
         """
         self.doc.scrub()
         self.doc.save(path, garbage=3, deflate=True)
+        self._saved_entry = self.history.current
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +491,37 @@ class RedactorApp:
         self.root.bind("<Command-Shift-z>", lambda e: self._on_redo())
         self.root.bind("<Command-Shift-Z>", lambda e: self._on_redo())
 
+        # Closing the window, Cmd+Q and PDF Redactor > Quit all ask about
+        # unsaved work first. Without the ::tk::mac::Quit handler, Tk just
+        # exits on Cmd+Q.
+        self.root.protocol("WM_DELETE_WINDOW", self._on_quit)
+        self.root.createcommand("::tk::mac::Quit", self._on_quit)
+
         self._update_ui_state()
+
+    # -- Unsaved work ---------------------------------------------------------
+
+    def _confirm_discard(self) -> bool:
+        """Before closing the document (closing, quitting, opening
+        another): offer to save unsaved work. True = go ahead."""
+        if not self.model.has_unsaved_work:
+            return True
+        if self.model.has_pending():
+            message = ("You have redactions that haven't been applied and "
+                       "saved. They'll be lost.\n\nSave first?")
+        else:
+            message = ("You have applied redactions that haven't been saved "
+                       "to a file. They'll be lost.\n\nSave first?")
+        answer = messagebox.askyesnocancel("Unsaved Redactions", message)
+        if answer is None:
+            return False
+        if answer:
+            return self._on_save()
+        return True
+
+    def _on_quit(self, *args) -> None:
+        if self._confirm_discard():
+            self.root.destroy()
 
     # -- Menu bar -------------------------------------------------------------
 
@@ -759,6 +802,8 @@ class RedactorApp:
     # -- File operations ------------------------------------------------------
 
     def _on_open(self) -> None:
+        if not self._confirm_discard():
+            return
         path = filedialog.askopenfilename(
             title="Open PDF",
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
@@ -775,9 +820,10 @@ class RedactorApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not open PDF:\n{e}")
 
-    def _on_save(self) -> None:
+    def _on_save(self) -> bool:
+        """Returns True if the file was saved."""
         if not self.model.doc:
-            return
+            return False
 
         # Warn about unapplied redactions
         if self.model.has_pending():
@@ -790,7 +836,7 @@ class RedactorApp:
                 "Cancel = Go back",
             )
             if answer is None:
-                return
+                return False
             if answer:
                 self._do_apply()
 
@@ -807,20 +853,20 @@ class RedactorApp:
             filetypes=[("PDF files", "*.pdf")],
         )
         if not path:
-            return
+            return False
 
         try:
             self.model.save_document(path)
-            messagebox.showinfo("Saved", f"Redacted PDF saved to:\n{path}")
-            self.status_label.config(text=f"Saved to {os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("Error", f"Could not save PDF:\n{e}")
+            return False
+        messagebox.showinfo("Saved", f"Redacted PDF saved to:\n{path}")
+        self.status_label.config(text=f"Saved to {os.path.basename(path)}")
+        return True
 
     def _on_close_doc(self) -> None:
-        if self.model.has_pending():
-            if not messagebox.askyesno("Close",
-                                        "Discard pending redactions?"):
-                return
+        if not self.model.doc or not self._confirm_discard():
+            return
         self.model.close_document()
         self.renderer.invalidate()
         self.canvas.delete("all")

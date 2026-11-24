@@ -26,6 +26,22 @@ def _widget_state(widget) -> str:
     return str(widget["state"])
 
 
+@pytest.fixture(autouse=True)
+def no_real_dialogs(monkeypatch):
+    """A real dialog would block the run waiting for a click (on the
+    screen of whoever runs the tests). Any dialog a test doesn't expect,
+    by monkeypatching it again, fails the test instead."""
+    def unexpected(name):
+        def fail(*args, **kwargs):
+            raise AssertionError(f"unexpected dialog {name}: {args} {kwargs}")
+        return fail
+    for name in ("showinfo", "showwarning", "showerror", "askyesno",
+                 "askyesnocancel", "askokcancel", "askquestion"):
+        monkeypatch.setattr(redactor.messagebox, name, unexpected(name))
+    for name in ("askopenfilename", "asksaveasfilename"):
+        monkeypatch.setattr(redactor.filedialog, name, unexpected(name))
+
+
 @pytest.fixture
 def app(sample_pdf_path):
     try:
@@ -36,7 +52,10 @@ def app(sample_pdf_path):
     instance.root.withdraw()
     yield instance
     instance.model.close_document()
-    instance.root.destroy()
+    try:
+        instance.root.destroy()
+    except redactor.tk.TclError:
+        pass   # the test quit the app
 
 
 def test_open_populates_original_history_entry(app, sample_pdf_path):
@@ -249,9 +268,135 @@ def test_failed_open_shows_error_and_keeps_document(app, sample_pdf_path,
                         lambda **k: str(junk))
     monkeypatch.setattr(redactor.messagebox, "showerror",
                         lambda title, message: errors.append(message))
+    # Opening asks about the pending mark first; carry on without saving.
+    monkeypatch.setattr(redactor.messagebox, "askyesnocancel",
+                        lambda *a, **k: False)
 
     app._on_open()
 
     assert errors and "Could not open PDF" in errors[0]
     assert app.model.file_path == str(sample_pdf_path)
     assert app.model.has_pending()
+
+
+# -- Quitting, closing and opening ask about unsaved work ----------------------
+
+def _root_exists(app):
+    try:
+        return bool(app.root.winfo_exists())
+    except redactor.tk.TclError:
+        return False
+
+
+def _answer(monkeypatch, answer):
+    asked = []
+    monkeypatch.setattr(redactor.messagebox, "askyesnocancel",
+                        lambda title, message: asked.append(message) or answer)
+    return asked
+
+
+def test_quit_handlers_are_registered(app):
+    commands = app.root.tk.splitlist(app.root.tk.call("info", "commands",
+                                                      "::tk::mac::Quit"))
+    assert commands == ("::tk::mac::Quit",)
+    assert "_on_quit" in app.root.protocol("WM_DELETE_WINDOW")
+
+
+def test_quit_with_nothing_unsaved_just_quits(app, sample_pdf_path):
+    _open_in_app(app, sample_pdf_path)
+    app._on_quit()
+    assert not _root_exists(app)
+
+
+def test_quit_with_pending_marks_asks_and_cancel_keeps_running(
+        app, sample_pdf_path, monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    asked = _answer(monkeypatch, None)          # Cancel
+    app._on_quit()
+    assert asked and "haven't been applied" in asked[0]
+    assert _root_exists(app) and app.model.has_pending()
+
+    _answer(monkeypatch, False)                 # Don't save
+    app._on_quit()
+    assert not _root_exists(app)
+
+
+def test_quit_after_applying_without_saving_asks(app, sample_pdf_path, monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    app._do_apply()
+    assert not app.model.has_pending()
+    asked = _answer(monkeypatch, None)
+    app._on_quit()
+    assert asked and "haven't been saved" in asked[0]
+    assert _root_exists(app)
+
+
+def test_choosing_save_when_quitting_saves_then_quits(app, sample_pdf_path,
+                                                      tmp_path, monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    app._do_apply()
+    out = tmp_path / "out.pdf"
+    _answer(monkeypatch, True)
+    monkeypatch.setattr(redactor.filedialog, "asksaveasfilename",
+                        lambda **k: str(out))
+    monkeypatch.setattr(redactor.messagebox, "showinfo", lambda *a, **k: None)
+    app._on_quit()
+    assert out.exists() and not _root_exists(app)
+
+
+def test_cancelling_the_save_dialog_cancels_quitting(app, sample_pdf_path,
+                                                     monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    app._do_apply()
+    _answer(monkeypatch, True)
+    monkeypatch.setattr(redactor.filedialog, "asksaveasfilename", lambda **k: "")
+    app._on_quit()
+    assert _root_exists(app)
+
+
+def test_saved_work_doesnt_ask(app, sample_pdf_path, tmp_path, monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    app._do_apply()
+    monkeypatch.setattr(redactor.filedialog, "asksaveasfilename",
+                        lambda **k: str(tmp_path / "out.pdf"))
+    monkeypatch.setattr(redactor.messagebox, "showinfo", lambda *a, **k: None)
+    assert app._on_save()
+    assert not app.model.has_unsaved_work
+    app._on_quit()                              # no dialog expected
+    assert not _root_exists(app)
+
+
+def test_opening_another_pdf_asks_first(app, sample_pdf_path, monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    asked = _answer(monkeypatch, None)
+    app._on_open()                              # no file dialog: cancelled first
+    assert asked and app.model.has_pending()
+
+
+def test_close_document_after_applying_asks(app, sample_pdf_path, monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    app._do_apply()
+    asked = _answer(monkeypatch, None)
+    app._on_close_doc()
+    assert asked and app.model.doc is not None
+
+
+def test_a_failed_save_cancels_quitting(app, sample_pdf_path, tmp_path, monkeypatch):
+    _open_in_app(app, sample_pdf_path)
+    _drag(app.controller, 50, 50, 200, 120)
+    app._do_apply()
+    _answer(monkeypatch, True)
+    monkeypatch.setattr(redactor.filedialog, "asksaveasfilename",
+                        lambda **k: str(tmp_path / "missing-folder" / "out.pdf"))
+    errors = []
+    monkeypatch.setattr(redactor.messagebox, "showerror",
+                        lambda title, message: errors.append(message))
+    app._on_quit()
+    assert errors and _root_exists(app)

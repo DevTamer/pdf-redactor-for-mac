@@ -386,3 +386,24 @@ def test_failed_open_keeps_current_document_and_pending(sample_pdf_path, tmp_pat
         assert "John Doe" in model.get_page(0).get_text()
     finally:
         model.close_document()
+
+
+# -- Unsaved work ------------------------------------------------------------
+
+def test_unsaved_work_tracks_pending_applied_and_saved(sample_pdf_path, tmp_path):
+    model = RedactionModel()
+    assert not model.has_unsaved_work                  # no document
+    model.open_document(str(sample_pdf_path))
+    assert not model.has_unsaved_work
+    model.add_redaction(RedactionRect.create(0, (50, 50, 200, 120), "manual"))
+    assert model.has_unsaved_work                      # pending mark
+    model.apply_redactions()
+    assert model.has_unsaved_work                      # applied, not saved
+    model.save_document(str(tmp_path / "out.pdf"))
+    assert not model.has_unsaved_work
+    model.undo()
+    assert model.has_unsaved_work                      # differs from the file
+    model.redo()
+    assert not model.has_unsaved_work                  # back to what's saved
+    model.close_document()
+    assert not model.has_unsaved_work

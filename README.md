@@ -51,7 +51,8 @@ earlier state — much like Photoshop's history palette.
 
 This history is intentionally session-only: it lives in memory for as long
 as the document stays open in the app, and closing the document or quitting
-discards it. Nothing about it is ever written to disk. **Whatever you Save
+discards it. (Closing, quitting with `Cmd+Q`, or opening another PDF first
+asks whether to save any redactions that haven't been applied and saved.) Nothing about it is ever written to disk. **Whatever you Save
 always reflects only the current state** — a saved file never contains
 history, so redacted content it no longer shows is genuinely gone from
 that file, not just hidden behind an available "undo." If you want to walk
