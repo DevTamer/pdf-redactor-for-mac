@@ -1,2 +1,9 @@
-PyMuPDF==1.24.14
+# 1.25+ needed: 1.24's redaction rewrote page content in an order Apple's
+# renderer (Preview, Safari) reads differently, hiding much of the page.
+PyMuPDF==1.28.2
 Pillow==11.3.0
+# Shared rendering/coordinate/history code (https://github.com/DevTamer/pdfcore).
+# Pinned to an exact tag: only move it after this app's tests pass against
+# the new version. For local development against a pdfcore checkout, see
+# "Working on pdfcore at the same time" in the README.
+pdfcore @ git+https://github.com/DevTamer/pdfcore.git@v0.1.3

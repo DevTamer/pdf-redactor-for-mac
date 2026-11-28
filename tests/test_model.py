@@ -2,7 +2,7 @@
 search, apply, and save.
 """
 
-import fitz
+import pymupdf
 import pytest
 
 from redactor import RedactionModel, RedactionRect
@@ -233,7 +233,7 @@ def test_save_document_persists_redactions(sample_pdf_path, tmp_path):
         model.close_document()
 
     assert out_path.exists()
-    reopened = fitz.open(str(out_path))
+    reopened = pymupdf.open(str(out_path))
     try:
         all_text = "".join(p.get_text() for p in reopened)
         assert "Falcon" not in all_text
@@ -241,3 +241,169 @@ def test_save_document_persists_redactions(sample_pdf_path, tmp_path):
         assert "John Doe" in all_text
     finally:
         reopened.close()
+
+
+# -- Guarantees that depend on pdfcore's session/history ----------------------
+#
+# The open document and the undo/redo history now come from pdfcore's
+# DocumentSession. These pin down the redactor-level guarantees that rely
+# on it: what reaches the saved file, and that the source is never touched.
+# (Rendering/coordinate alignment is covered by pdfcore's own tests and by
+# the drawing tests in test_gui_smoke.py.)
+
+def _all_decompressed_streams(path) -> bytes:
+    """Every stream in the file, decompressed, concatenated. Catches text
+    that's still present in the file but not reachable via get_text()."""
+    doc = pymupdf.open(str(path))
+    try:
+        chunks = []
+        for xref in range(1, doc.xref_length()):
+            if doc.xref_is_stream(xref):
+                chunks.append(doc.xref_stream(xref) or b"")
+            chunks.append((doc.xref_object(xref) or "").encode("latin-1", "replace"))
+        return b"".join(chunks)
+    finally:
+        doc.close()
+
+
+def _redact_everywhere(model, term):
+    for page_num, quads in model.search_text(term).items():
+        for q in quads:
+            r = q.rect
+            model.add_redaction(RedactionRect.create(
+                page_num, (r.x0, r.y0, r.x1, r.y1), "search", search_term=term))
+    return model.apply_redactions()
+
+
+def _file_contains(path, term: str) -> bool:
+    """Whether ``term`` appears anywhere in the file's raw (decompressed)
+    content, as literal bytes or as a PDF hex string (which is how
+    PyMuPDF's insert_text encodes it)."""
+    raw = _all_decompressed_streams(path).lower()
+    return (term.encode().lower() in raw
+            or term.encode().hex().encode() in raw)
+
+
+def test_saved_file_has_no_trace_of_pre_apply_history(sample_pdf_path, tmp_path):
+    # Sanity check the probe: the term is findable in the raw original.
+    assert _file_contains(sample_pdf_path, "Falcon")
+
+    model = RedactionModel()
+    model.open_document(str(sample_pdf_path))
+    try:
+        assert _redact_everywhere(model, "Falcon") >= 1
+        # Undo history still holds the "Original" snapshot in memory...
+        assert model.can_undo()
+
+        out_path = tmp_path / "redacted.pdf"
+        model.save_document(str(out_path))
+    finally:
+        model.close_document()
+
+    # ...but none of it reaches the saved file.
+    assert not _file_contains(out_path, "Falcon")
+    # (And the probe isn't vacuous on saved files: untouched text survives.)
+    assert _file_contains(out_path, "John Doe")
+
+
+def test_source_file_is_never_modified(sample_pdf_path, tmp_path):
+    before = sample_pdf_path.read_bytes()
+
+    model = RedactionModel()
+    model.open_document(str(sample_pdf_path))
+    try:
+        _redact_everywhere(model, "John Doe")
+        model.undo()
+        model.redo()
+        model.save_document(str(tmp_path / "out.pdf"))
+    finally:
+        model.close_document()
+
+    assert sample_pdf_path.read_bytes() == before
+
+
+def test_pending_redactions_are_cleared_on_reopen(sample_pdf_path):
+    model = RedactionModel()
+    model.open_document(str(sample_pdf_path))
+    try:
+        model.add_redaction(RedactionRect.create(0, (1, 1, 50, 50), "manual"))
+        model.open_document(str(sample_pdf_path))
+        assert not model.has_pending()
+        assert model.history_entries() == ["Original"]
+    finally:
+        model.close_document()
+
+
+def test_save_strips_metadata(tmp_path):
+    """save_document scrubs: document metadata (author, title, ...) can
+    identify people just as well as page text can."""
+    source = tmp_path / "with_metadata.pdf"
+    doc = pymupdf.open()
+    doc.new_page().insert_text((50, 100), "body text")
+    doc.set_metadata({"author": "Jane Secret", "title": "Internal memo",
+                      "subject": "Do not share"})
+    doc.save(str(source))
+    doc.close()
+
+    model = RedactionModel()
+    model.open_document(str(source))
+    try:
+        assert model.doc.metadata["author"] == "Jane Secret"  # probe sanity
+        out_path = tmp_path / "saved.pdf"
+        model.save_document(str(out_path))
+    finally:
+        model.close_document()
+
+    reopened = pymupdf.open(str(out_path))
+    try:
+        meta = reopened.metadata
+        assert not meta.get("author")
+        assert not meta.get("title")
+        assert not meta.get("subject")
+    finally:
+        reopened.close()
+    assert not _file_contains(out_path, "Jane Secret")
+
+
+def test_failed_open_keeps_current_document_and_pending(sample_pdf_path, tmp_path):
+    """Picking an unreadable file must not throw away the open document or
+    its pending (unapplied) redactions."""
+    locked = tmp_path / "locked.pdf"
+    doc = pymupdf.open()
+    doc.new_page().insert_text((50, 100), "secret")
+    doc.save(str(locked), encryption=pymupdf.PDF_ENCRYPT_AES_256,
+             user_pw="pw", owner_pw="pw")
+    doc.close()
+
+    model = RedactionModel()
+    model.open_document(str(sample_pdf_path))
+    try:
+        model.add_redaction(RedactionRect.create(0, (1, 1, 50, 50), "manual"))
+        with pytest.raises(ValueError, match="password-protected"):
+            model.open_document(str(locked))
+        assert model.file_path == str(sample_pdf_path)
+        assert model.has_pending()
+        assert "John Doe" in model.get_page(0).get_text()
+    finally:
+        model.close_document()
+
+
+# -- Unsaved work ------------------------------------------------------------
+
+def test_unsaved_work_tracks_pending_applied_and_saved(sample_pdf_path, tmp_path):
+    model = RedactionModel()
+    assert not model.has_unsaved_work                  # no document
+    model.open_document(str(sample_pdf_path))
+    assert not model.has_unsaved_work
+    model.add_redaction(RedactionRect.create(0, (50, 50, 200, 120), "manual"))
+    assert model.has_unsaved_work                      # pending mark
+    model.apply_redactions()
+    assert model.has_unsaved_work                      # applied, not saved
+    model.save_document(str(tmp_path / "out.pdf"))
+    assert not model.has_unsaved_work
+    model.undo()
+    assert model.has_unsaved_work                      # differs from the file
+    model.redo()
+    assert not model.has_unsaved_work                  # back to what's saved
+    model.close_document()
+    assert not model.has_unsaved_work

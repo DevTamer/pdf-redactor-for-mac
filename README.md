@@ -51,7 +51,8 @@ earlier state — much like Photoshop's history palette.
 
 This history is intentionally session-only: it lives in memory for as long
 as the document stays open in the app, and closing the document or quitting
-discards it. Nothing about it is ever written to disk. **Whatever you Save
+discards it. (Closing, quitting with `Cmd+Q`, or opening another PDF first
+asks whether to save any redactions that haven't been applied and saved.) Nothing about it is ever written to disk. **Whatever you Save
 always reflects only the current state** — a saved file never contains
 history, so redacted content it no longer shows is genuinely gone from
 that file, not just hidden behind an available "undo." If you want to walk
@@ -80,33 +81,74 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The automated suite (`tests/`) covers the redaction model, PDF rendering
-cache, and coordinate math — everything that doesn't require an actual
-on-screen window. It does **not** exercise the GUI itself (clicking,
-dragging, dialogs); see [`docs/MANUAL_TESTING.md`](docs/MANUAL_TESTING.md)
-for a checklist to run the real app through its paces by hand before a
-release.
+The automated suite (`tests/`) covers the redaction model, redaction
+precision, undo/redo history, and what actually ends up in saved files. It
+also includes a smoke test that drives the real window's handlers, including
+drawing rectangles with simulated mouse events. That test skips itself if
+Tk can't open a window. Tests for rendering and coordinate math live in
+[pdfcore](https://github.com/DevTamer/pdfcore). Dialogs and real clicking
+still need a manual pass before a release; see
+[`docs/MANUAL_TESTING.md`](docs/MANUAL_TESTING.md).
+
+### Working on pdfcore at the same time
+
+The page rendering, PDF↔screen coordinate math, undo/redo snapshot history
+and canvas page view come from [pdfcore](https://github.com/DevTamer/pdfcore),
+a small library shared with the PDF Editor app. `requirements.txt` pins it to
+an exact release tag. To change pdfcore and see the effect here immediately,
+clone it next to this repo and install it in editable mode:
+
+```bash
+git clone https://github.com/DevTamer/pdfcore.git ../pdfcore
+./setup.sh --with-local-pdfcore     # or: pip install -e ../pdfcore
+```
+
+This works even when the pinned tag isn't published yet. Note that running
+a plain `pip install -r requirements.txt` afterwards quietly swaps the
+editable install back to the pinned release. Re-run
+`pip install -e ../pdfcore` if that happens.
+
+Before releasing the redactor against a new pdfcore version, tag that
+pdfcore release, bump the pin in `requirements.txt`, and let the build
+script's test run pass (see below).
 
 ### Building the macOS app / DMG
 
 See [`packaging/`](packaging/) for the `py2app` build used to produce the
-`.app`/`.dmg` published on the Releases page.
+`.app`/`.dmg` published on the Releases page. `packaging/build_app.sh`
+builds in a fresh venv from the exact pinned `requirements.txt` (never from
+a local editable pdfcore), and runs the test suite there before building.
 
 ## Architecture
 
-Everything lives in `redactor.py`, split into focused pieces:
+The app itself is `redactor.py`. The code it shares with the PDF Editor app
+lives in [pdfcore](https://github.com/DevTamer/pdfcore). Anything that
+decides what happens to a document's content (redaction, scrubbing, saving)
+stays in `redactor.py`. That way a change to pdfcore made for the editor
+can't weaken this app's guarantees.
 
-- `RedactionModel` — owns the open `fitz.Document`, tracks pending
-  redactions per page, runs search/apply/save, and keeps the in-memory
-  undo/redo history (a stack of full document snapshots, one per apply).
-  No UI code.
-- `PDFRenderer` — renders pages to `PIL.Image`s with a small LRU cache.
-- `CoordinateMapper` — pure PDF-point ↔ canvas-pixel math, with no Tk
-  dependency (this is what makes it unit-testable in the first place).
-- `CanvasController` — wires up Tk canvas mouse events (draw/select/remove
-  rectangles) and delegates coordinate math to `CoordinateMapper`.
-- `RedactorApp` — builds the Tk window/menus/sidebar and glues the above
-  together.
+In `redactor.py`:
+
+- `RedactionModel` tracks pending redactions per page and runs
+  search/apply/save. It builds on pdfcore's `DocumentSession`, which holds
+  the open `pymupdf.Document`, the current page, and the in-memory undo/redo
+  history (one full document snapshot per apply). No UI code.
+- `CanvasController` handles drawing, selecting and removing redaction
+  rectangles with the mouse. It builds on pdfcore's `PageView`, which shows
+  the page on the Tk canvas and converts between screen pixels and PDF
+  points.
+- `RedactorApp` builds the Tk window, menus and sidebar and connects the
+  pieces above.
+
+From pdfcore:
+
+- `PDFRenderer` renders pages to `PIL.Image`s with a small LRU cache.
+- `CoordinateMapper` does the PDF-point ↔ canvas-pixel math, with no Tk
+  dependency.
+- `SnapshotHistory` is the undo/redo stack behind `DocumentSession`. It is
+  memory-only by design and never writes to disk.
+- `configure_bundled_tcl_tk()` points Tcl/Tk at the copy bundled inside the
+  `.app`. It runs before `tkinter` is imported.
 
 ## Limitations
 

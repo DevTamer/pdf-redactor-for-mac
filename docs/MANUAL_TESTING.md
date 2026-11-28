@@ -1,10 +1,11 @@
 # Manual GUI testing checklist
 
-The automated `pytest` suite covers `RedactionModel`, `PDFRenderer`, and
-`CoordinateMapper` — the logic that doesn't need a live window. It does not,
-and cannot, drive real Tk widgets (clicks, drags, dialogs). Run this
-checklist by hand against the actual app before cutting a release or after
-any change that touches `CanvasController` / `RedactorApp`.
+The automated `pytest` suite covers `RedactionModel` and the app's handlers.
+It simulates mouse events, but it can't click real widgets or answer native
+dialogs. Rendering and coordinate math are tested in pdfcore. Run this
+checklist by hand against the actual app before cutting a release, after any
+change that touches `CanvasController` / `RedactorApp`, and after bumping
+the pinned pdfcore version.
 
 You'll need at least one real (non-sensitive) test PDF with a few pages and
 some repeated text on it — e.g. print any document to PDF, or reuse a public
@@ -121,9 +122,14 @@ sample PDF.
 
 ## Closing / edge cases
 
-- [ ] **Close Document** (`Cmd+W`) with pending redactions asks to discard;
-      declining keeps the document and its pending redactions open.
-- [ ] Opening a second PDF while one is already open replaces it cleanly
-      (no stale overlays/pending list from the previous document).
+- [ ] **Close Document** (`Cmd+W`) with pending redactions asks whether to
+      save first; Cancel keeps the document and its pending redactions open.
+- [ ] `Cmd+Q`, PDF Redactor → Quit, and the window's close button all ask
+      the same when there are pending or applied-but-unsaved redactions;
+      Cancel keeps the app open, Yes saves and then quits. With everything
+      saved they quit straight away.
+- [ ] Opening a second PDF with unsaved redactions asks first. Once it's
+      open it replaces the first cleanly (no stale overlays or pending list
+      from the previous document).
 - [ ] Opening a non-PDF or corrupt file shows an error dialog instead of
       crashing.

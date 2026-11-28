@@ -4,10 +4,12 @@ Each apply becomes one history entry holding a full snapshot of the
 document. undo()/redo()/jump_to_history() swap the live document for an
 earlier or later snapshot — this is the "Photoshop history palette"
 feature, deliberately scoped to the current app session (see
-HistoryEntry's docstring in redactor.py for why).
+RedactionModel's docstring in redactor.py for why). The generic history
+mechanics are also unit-tested in pdfcore; these tests cover them as the
+redactor actually uses them.
 """
 
-import fitz
+import pymupdf
 import pytest
 
 from redactor import RedactionModel, RedactionRect, HISTORY_LIMIT
@@ -219,7 +221,7 @@ def test_save_after_undo_writes_the_reverted_state(sample_pdf_path, tmp_path):
     finally:
         model.close_document()
 
-    reopened = fitz.open(str(out_path))
+    reopened = pymupdf.open(str(out_path))
     try:
         assert "John Doe" in reopened[0].get_text()
     finally:
